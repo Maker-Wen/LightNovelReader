@@ -57,7 +57,13 @@ class WebBookDataSourceManager @Inject constructor(
                 runCatching { classLoader.loadClass(className) }.getOrNull() ?: return@forEach
             if (!WebBookDataSource::class.java.isAssignableFrom(clazz)) return@forEach
             val instance = injector.provide<WebBookDataSource>(clazz)
-            if (instance is WebBookDataSource) items.add(loadWebDataSourceClass(instance))
+            if (instance is WebBookDataSource) {
+                // A duplicate identifier is rejected by registerWebDataSource.
+                // Do not retain a rejected item in the class-loader ownership
+                // map: unloading that plugin must never remove the built-in
+                // source that already owns the identifier.
+                loadWebDataSourceClass(instance)?.let(items::add)
+            }
         }
         webDataSourceItemListMap[packageName] = items
     }
@@ -69,7 +75,7 @@ class WebBookDataSourceManager @Inject constructor(
         if (!WebBookDataSource::class.java.isAssignableFrom(clazz)) return
         val instance = injector.provide<WebBookDataSource>(clazz)
         if (instance is WebBookDataSource) {
-            val item = loadWebDataSourceClass(instance)
+            val item = loadWebDataSourceClass(instance) ?: return
             val packageName = clazz.`package`?.name ?: return
             if (webDataSourceItemListMap.contains(packageName)) {
                 webDataSourceItemListMap[packageName] =
@@ -80,19 +86,27 @@ class WebBookDataSourceManager @Inject constructor(
         }
     }
 
-    fun loadWebDataSourceClass(instance: WebBookDataSource): WebDataSourceItem {
+    fun loadWebDataSourceClass(instance: WebBookDataSource): WebDataSourceItem? {
         val info = instance.javaClass.getAnnotationsByType(WebDataSource::class.java)
         val item = WebDataSourceItem(
             instance.id,
             info.first().name,
             info.first().provider,
         )
+        if (_webDataSourceItems.any { it.id == item.id }) return null
         registerWebDataSource(instance, item)
         return item
     }
 
     fun unloadWebDataSourcesFromClassLoader(packageName: String) {
-        webDataSourceItemListMap[packageName]?.let { _webDataSourceItems.removeAll(it) }
+        webDataSourceItemListMap.remove(packageName)?.let { items ->
+            if (items.isNotEmpty()) {
+                val ids = items.mapTo(mutableSetOf()) { it.id }
+                _webDataSourceItems.removeAll(items.toSet())
+                webBookDataSources.removeAll { it.id in ids }
+                onWebDataSourceListChange()
+            }
+        }
     }
 
     fun getWebDataSourceProvider(): WebBookDataSourceProvider {

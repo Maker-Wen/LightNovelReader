@@ -216,6 +216,8 @@ dependencies {
     implementation(libs.aboutlibraries.compose.m3)
     // LNR API
     implementation(project(":api"))
+    // Built-in Linovelib source module
+    implementation(project(":source:linovelib"))
     implementation(libs.dom4j)
     implementation(libs.kotlin.result)
     implementation(libs.kotlin.result.coroutines)

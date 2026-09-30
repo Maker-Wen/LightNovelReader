@@ -24,6 +24,7 @@ import indi.dmzz_yyhyy.lightnovelreader.data.plugin.install.PluginInstallError
 import indi.dmzz_yyhyy.lightnovelreader.data.userdata.UserDataRepository
 import indi.dmzz_yyhyy.lightnovelreader.data.web.WebBookDataSourceManager
 import indi.dmzz_yyhyy.lightnovelreader.defaultplugin.wenku8.Wenku8Api
+import io.nightfish.lightnovelreader.source.linovelib.LinovelibWebDataSource
 import indi.dmzz_yyhyy.lightnovelreader.ui.navigation.NavEntryScope
 import indi.dmzz_yyhyy.lightnovelreader.utils.classLoader
 import indi.dmzz_yyhyy.lightnovelreader.utils.getApkSignatures
@@ -172,6 +173,13 @@ class PluginManager @Inject constructor(
         pluginsTempDir.deleteRecursively()
         webBookDataSourceManager.loadWebDataSourceFromClass(
             Wenku8Api::class.java,
+            pluginInjector
+        )
+        // Linovelib is shipped as a built-in API 4 source. Register it before
+        // external plugins so the built-in implementation owns the canonical
+        // identifier when an older standalone Linovelib APK is still present.
+        webBookDataSourceManager.loadWebDataSourceFromClass(
+            LinovelibWebDataSource::class.java,
             pluginInjector
         )
         appPluginInfos = initAllAppPlugin()

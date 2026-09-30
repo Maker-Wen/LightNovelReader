@@ -21,6 +21,7 @@ local.properties
 .kotlin/
 /app/snapshot/
 /proxy/build/**
+/source/linovelib/build/**
 /compiler/build/**
 /build/**
 /artifacts/
