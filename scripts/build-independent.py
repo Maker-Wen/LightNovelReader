@@ -104,7 +104,8 @@ def main():
     metadata_path = ROOT / "app/build/outputs/apk/independent/output-metadata.json"
     metadata = json.loads(metadata_path.read_text())
     element, = metadata["elements"]
-    apk = out / f"LightNovelReader-MW-{element['versionCode']}.apk"
+    # Keep the artifact filename produced by the Android Gradle Plugin.
+    apk = out / element["outputFile"]
     shutil.copy2(metadata_path.parent / element["outputFile"], apk)
 
     def run(*command):
