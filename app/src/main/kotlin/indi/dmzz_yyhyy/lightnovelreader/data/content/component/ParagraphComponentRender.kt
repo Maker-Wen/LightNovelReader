@@ -7,6 +7,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import indi.dmzz_yyhyy.lightnovelreader.ui.LocalAppTheme
+import indi.dmzz_yyhyy.lightnovelreader.ui.book.reader.content.componet.LocalReaderTextLayout
 import io.nightfish.lightnovelreader.api.content.component.AbstractContentComponentRender
 import io.nightfish.lightnovelreader.api.content.component.data.ParagraphComponentData
 import io.nightfish.lightnovelreader.api.ui.LocalReaderStyle
@@ -29,14 +30,15 @@ class ParagraphComponentRender: AbstractContentComponentRender<ParagraphComponen
                 data.index != 1,
                 LocalAppTheme.current.isDark
             ),
-            modifier = Modifier.padding(
+            modifier = modifier.padding(
                 bottom = with(density) {
                     readerStyle.spacingAfterParagraph.toDp()
                 },
                 top = with(density) {
                     readerStyle.spacingBeforeParagraph.toDp()
                 }
-            )
+            ),
+            onTextLayout = LocalReaderTextLayout.current
         )
     }
 }

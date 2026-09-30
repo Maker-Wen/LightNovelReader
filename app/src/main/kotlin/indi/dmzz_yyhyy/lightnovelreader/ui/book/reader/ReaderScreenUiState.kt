@@ -6,6 +6,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.github.michaelbull.result.Result
 import indi.dmzz_yyhyy.lightnovelreader.ui.book.reader.content.ContentUiState
+import indi.dmzz_yyhyy.lightnovelreader.ui.book.reader.content.ReaderPosition
 import io.nightfish.lightnovelreader.api.book.BookVolumes
 import io.nightfish.lightnovelreader.api.book.UserReadingData
 import io.nightfish.lightnovelreader.api.error.WebRequestError
@@ -16,6 +17,9 @@ interface ReaderScreenUiState {
     val userReadingData: UserReadingData?
     val bookVolumes: Result<BookVolumes, WebRequestError>?
     val contentUiState: ContentUiState?
+    val progressMap: ReaderProgressMap
+    val position: ReaderPosition?
+    val originPosition: ReaderPosition?
 }
 
 class MutableReaderScreenUiState(
@@ -25,4 +29,7 @@ class MutableReaderScreenUiState(
     override var userReadingData: UserReadingData? by mutableStateOf(null)
     override var bookVolumes: Result<BookVolumes, WebRequestError>? by mutableStateOf(null)
     override var contentUiState by mutableStateOf(contentUiState)
+    override var progressMap by mutableStateOf(ReaderProgressMap(emptyList()))
+    override var position: ReaderPosition? by mutableStateOf(null)
+    override var originPosition: ReaderPosition? by mutableStateOf(null)
 }

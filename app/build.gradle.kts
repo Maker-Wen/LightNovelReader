@@ -25,11 +25,12 @@ android {
         minSdk = 24
         targetSdk = 37
         // 版本号为x.y.z则versionCode为x*1000000+y*10000+z*1000+debug版本号(开发需要时迭代, 三位数)
-        versionCode = 1_03_00_009
+        versionCode = 1_03_00_010
         versionName = "1.3.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("boolean", "BENCHMARK", "false")
+        buildConfigField("boolean", "INDEPENDENT_BUILD", "false")
         vectorDrawables {
             useSupportLibrary = true
         }
@@ -70,6 +71,15 @@ android {
             versionNameSuffix = "_SN (${dateFormat.format(Date())})"
         }
 
+        register("independent") {
+            initWith(getByName("release"))
+            matchingFallbacks.add("release")
+            vcsInfo.include = true
+            buildConfigField("boolean", "INDEPENDENT_BUILD", "true")
+            val dateFormat = SimpleDateFormat("yyyy/MM/dd", Locale.US)
+            versionNameSuffix = "_MakerWen (${dateFormat.format(Date())})"
+        }
+
         register("benchmark") {
             initWith(getByName("release"))
             signingConfig = signingConfigs.getByName("debug")
@@ -101,6 +111,10 @@ android {
 }
 
 androidComponents {
+    onVariants(selector().withBuildType("independent")) { variant ->
+        variant.applicationId.set("io.github.makerwen.lightnovelreader")
+    }
+
     onVariants(selector().withBuildType("snapshot")) { variant ->
         variant.outputs.forEach { output ->
             val outputImpl = output as com.android.build.api.variant.impl.VariantOutputImpl

@@ -6,6 +6,7 @@ import androidx.compose.runtime.snapshots.StateFactoryMarker
 import io.nightfish.lightnovelreader.api.userdata.UserData
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
 
 abstract class AbstractSettingState(
@@ -15,22 +16,16 @@ abstract class AbstractSettingState(
     @StateFactoryMarker
     protected fun <T> UserData<T>.asState(initial: T): State<T> {
         val state = mutableStateOf(initial)
-        coroutineScope.launch(Dispatchers.IO) {
-            getFlowWithDefault(initial).collect {
-                state.value = it
-            }
+        // Publish after the creating composition has applied its snapshot. An IO write
+        // during initialization can otherwise be replaced by that snapshot's initial value.
+        coroutineScope.launch(Dispatchers.Main) {
+            getFlowWithDefault(initial)
+                .flowOn(Dispatchers.IO)
+                .collect { state.value = it }
         }
         return state
     }
 
     @StateFactoryMarker
-    protected fun <T> UserData<T>.safeAsState(initial: T): State<T> {
-        val state = mutableStateOf(initial)
-        coroutineScope.launch(Dispatchers.IO) {
-            getFlowWithDefault(initial).collect {
-                state.value = it
-            }
-        }
-        return state
-    }
+    protected fun <T> UserData<T>.safeAsState(initial: T): State<T> = asState(initial)
 }

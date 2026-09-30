@@ -16,9 +16,15 @@ class ReadingAndManagerTest : UiAutomatorTest() {
         assertText("Resume Last Reading")
         assertTextContains("Recent Reads")
 
+        // ReadingBooks is displayed in reverse insertion order, so the seeded second book
+        // is the initial resume card, independently of its displayed last-read timestamp.
+        assertText("Second Book Chapter Two")
         clickText("Resume Last Reading")
-        assertTextContains("Benchmark paragraph")
+        assertTextContains("Second book chapter two progress paragraph")
+        assertText("Second Book Chapter Two")
         pressBack()
+        assertText("Second Benchmark Novel")
+        assertText("Second Benchmark Author")
         pressBack()
         assertText("Reading")
 

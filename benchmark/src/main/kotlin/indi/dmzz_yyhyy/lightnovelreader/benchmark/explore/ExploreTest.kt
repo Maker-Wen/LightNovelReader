@@ -5,6 +5,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.LargeTest
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.Direction
+import androidx.test.uiautomator.StaleObjectException
 import androidx.test.uiautomator.UiObject2
 import androidx.test.uiautomator.Until
 import indi.dmzz_yyhyy.lightnovelreader.benchmark.ui.UiAutomatorTest
@@ -68,7 +69,7 @@ class ExploreTest : UiAutomatorTest() {
         openBottomNavigation("Explore")
         clickDescription("search")
         setFirstTextField("automation-history")
-        device.pressEnter()
+        submitSearch()
         device.waitForIdle()
 
         val field = device.findObject(
@@ -82,7 +83,7 @@ class ExploreTest : UiAutomatorTest() {
         assertTextNotVisible("automation-history")
 
         setFirstTextField("clear-all-history")
-        device.pressEnter()
+        submitSearch()
         device.waitForIdle()
         clickCenter(device.findObject(By.clazz("android.widget.EditText")))
         assertText("Clear All")
@@ -106,7 +107,7 @@ class ExploreTest : UiAutomatorTest() {
         // public IP. Other live-search tests may have just used that endpoint.
         SystemClock.sleep(6_000)
         shell("logcat -c")
-        device.pressEnter()
+        submitSearch()
         device.waitForIdle()
 
         val queryNodes = device.wait(Until.findObjects(By.text(query)), TIMEOUT)
@@ -128,10 +129,39 @@ class ExploreTest : UiAutomatorTest() {
         launchApp()
         openBottomNavigation("Explore")
 
-        // The second source tab is the built-in "All" page. Its labels are
-        // supplied by the source, so select it by stable tab position.
-        device.click(device.displayWidth / 2, (device.displayHeight * 0.21).toInt())
+        // Source tabs arrive asynchronously. Read their actual nodes before
+        // selecting the second tab, independently of source-provided labels.
+        val tabSelector = By.pkg(TARGET_PACKAGE).clazz("android.view.View")
+            .focusable(true).hasChild(By.clazz("android.widget.TextView"))
+        val deadline = SystemClock.uptimeMillis() + NETWORK_TIMEOUT
+        var sourceTabs = emptyList<UiObject2>()
+        while (SystemClock.uptimeMillis() < deadline && sourceTabs.size < 2) {
+            sourceTabs = try {
+                val selectedTab = device.findObjects(
+                    By.pkg(TARGET_PACKAGE).selected(true)
+                        .hasChild(By.clazz("android.widget.TextView")),
+                ).firstOrNull { it.visibleBounds.bottom < device.displayHeight / 2 }
+                selectedTab?.parent?.children
+                    ?.filter { it.isFocusable && it.hasObject(By.clazz("android.widget.TextView")) }
+                    ?.sortedBy { it.visibleBounds.left }
+                    .orEmpty()
+            } catch (_: StaleObjectException) {
+                emptyList()
+            }
+            if (sourceTabs.size < 2) SystemClock.sleep(100)
+        }
+        assertTrue("Source tabs did not become visible", sourceTabs.size >= 2)
+        val secondTab = sourceTabs[1]
+        val secondTabLabel = secondTab.findObject(By.clazz("android.widget.TextView")).text
+        clickCenter(secondTab)
         device.waitForIdle()
+        assertTrue(
+            "The second source tab was not selected: $secondTabLabel",
+            device.wait(
+                Until.hasObject(tabSelector.selected(true).hasChild(By.text(secondTabLabel))),
+                TIMEOUT,
+            ),
+        )
 
         val expandButtons = waitForDescriptions("expand")
         clickCenter(expandButtons.first())

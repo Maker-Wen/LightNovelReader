@@ -39,8 +39,10 @@ fun NavEntryScope.bookReaderDestination() {
         val navigator = LocalNavigator.current
         val viewModel = hiltViewModel<ReaderViewModel>()
         LaunchedEffect(route) {
-            viewModel.bookId = route.bookId
-            viewModel.changeChapter(route.chapterId)
+            if (viewModel.bookId != route.bookId) {
+                viewModel.bookId = route.bookId
+                viewModel.changeChapter(route.chapterId)
+            }
         }
         ReaderScreen(
             readingScreenUiState = viewModel.uiState,
@@ -51,7 +53,12 @@ fun NavEntryScope.bookReaderDestination() {
             onClickPrevChapter = viewModel::prevChapter,
             onClickNextChapter = viewModel::nextChapter,
             onChangeChapter = viewModel::changeChapter,
-            onClickReaderStyleSettings = navigator::navigateToSettingsReaderStyleDestination
+            onClickReaderStyleSettings = navigator::navigateToSettingsReaderStyleDestination,
+            onBeginSeek = viewModel::beginSeek,
+            onSeek = viewModel::seek,
+            onCancelSeek = viewModel::cancelSeek,
+            onReturnToOrigin = viewModel::returnToOrigin,
+            onClearReturnPosition = viewModel::clearReturnPosition
         )
     }
     colorPickerDialog()

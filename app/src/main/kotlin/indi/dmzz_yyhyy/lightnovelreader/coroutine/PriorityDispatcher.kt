@@ -1,20 +1,24 @@
 package indi.dmzz_yyhyy.lightnovelreader.coroutine
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.InternalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlin.coroutines.AbstractCoroutineContextElement
 import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.EmptyCoroutineContext
 
 
-@OptIn(InternalCoroutinesApi::class)
+@OptIn(InternalCoroutinesApi::class, ExperimentalCoroutinesApi::class)
 class PriorityDispatcher(
     private val maxConcurrency: Int,
     private val defaultPriority: Int = 0,
@@ -39,16 +43,22 @@ class PriorityDispatcher(
     override fun dispatch(context: CoroutineContext, block: Runnable) {
         val priority = context[Priority]?.value ?: defaultPriority
         val job = context[Job]
-        check(commands.trySend(Command.Enqueue(priority, block, job)).isSuccess) {
-            "dispatcher is closed"
+        if (commands.trySend(Command.Enqueue(priority, block, job)).isFailure) {
+            reject(job, block)
         }
     }
 
     suspend fun close() {
         if (!closed.isCompleted) {
-            commands.send(Command.Shutdown)
+            commands.trySend(Command.Shutdown)
         }
         closed.await()
+    }
+
+    private fun reject(job: Job?, block: Runnable) {
+        job?.cancel(CancellationException("dispatcher is closed"))
+        // A rejected continuation still has to run to perform cancellation cleanup.
+        Dispatchers.IO.dispatch(EmptyCoroutineContext, block)
     }
 
     private suspend fun runCoordinator(startPaused: Boolean) {
@@ -59,6 +69,12 @@ class PriorityDispatcher(
         var paused = startPaused
         var acceptingTasks = true
         var nextSequence = 0L
+
+        fun activeAncestor(job: Job?): Job? =
+            generateSequence(job) { it.parent }.firstOrNull { it in activeJobs }
+
+        fun knownAncestor(job: Job?): Job? =
+            generateSequence(job) { it.parent }.lastOrNull { it in knownJobs }
 
         fun enqueue(priority: Int, block: Runnable, job: Job?) {
             val task = ScheduledTask(
@@ -78,11 +94,9 @@ class PriorityDispatcher(
                 job.invokeOnCompletion {
                     commands.trySend(Command.JobCompleted(job))
                 }
-                pendingStarts.add(task)
-                return
             }
 
-            if (job in activeJobs) {
+            if (job.isCompleted || activeAncestor(job) != null) {
                 readyTasks.add(task)
             } else {
                 pendingStarts.add(task)
@@ -90,11 +104,6 @@ class PriorityDispatcher(
         }
 
         fun launchTask(task: ScheduledTask) {
-            val taskJob = task.job
-            if (taskJob != null) {
-                activeJobs += taskJob
-            }
-
             workerScope.launch {
                 runCatching { task.block.run() }
                     .onFailure(Throwable::printStackTrace)
@@ -110,19 +119,33 @@ class PriorityDispatcher(
                 launchTask(readyTasks.removeFirst())
             }
 
-            while (activeJobs.size < maxConcurrency && pendingStarts.isNotEmpty()) {
-                launchTask(pendingStarts.removeFirst())
-                while (readyTasks.isNotEmpty()) {
-                    launchTask(readyTasks.removeFirst())
+            while (pendingStarts.isNotEmpty()) {
+                val task = if (activeJobs.size < maxConcurrency) {
+                    pendingStarts.removeFirst()
+                } else {
+                    // Descendants may have queued before their ancestor was admitted.
+                    pendingStarts.removeFirstMatching {
+                        it.job?.isCompleted == true || activeAncestor(it.job) != null
+                    } ?: break
                 }
+                val job = task.job
+                if (job != null && !job.isCompleted && activeAncestor(job) == null) {
+                    // Only ancestors dispatched here share a permit; an external scope's
+                    // common SupervisorJob must not merge independent requests.
+                    val requestJob = knownAncestor(job) ?: job
+                    if (!requestJob.isCompleted) activeJobs += requestJob
+                }
+                launchTask(task)
             }
         }
 
         for (command in commands) {
             when (command) {
                 is Command.Enqueue -> {
-                    if (acceptingTasks) {
+                    if (acceptingTasks || knownAncestor(command.job) != null) {
                         enqueue(command.priority, command.block, command.job)
+                    } else {
+                        reject(command.job, command.block)
                     }
                 }
 
@@ -133,7 +156,10 @@ class PriorityDispatcher(
 
                 Command.Pause -> paused = true
                 Command.Resume -> paused = false
-                Command.Shutdown -> acceptingTasks = false
+                Command.Shutdown -> {
+                    acceptingTasks = false
+                    paused = false
+                }
             }
 
             launchReadyTasks()
@@ -144,6 +170,11 @@ class PriorityDispatcher(
         }
 
         commands.close()
+        // dispatch() may have queued work just before close won the race.
+        for (command in commands) {
+            if (command is Command.Enqueue) reject(command.job, command.block)
+        }
+        workerScope.coroutineContext[Job]?.children?.toList()?.joinAll()
         workerScope.cancel()
         controlScope.cancel()
         closed.complete(Unit)
@@ -182,11 +213,29 @@ class PriorityDispatcher(
         }
 
         fun removeFirst(): ScheduledTask {
-            val first = items.first()
+            return removeAt(0)
+        }
+
+        fun removeFirstMatching(predicate: (ScheduledTask) -> Boolean): ScheduledTask? {
+            var best = -1
+            for (index in items.indices) {
+                if (predicate(items[index]) && (best == -1 || items[index] > items[best])) {
+                    best = index
+                }
+            }
+            return if (best == -1) null else removeAt(best)
+        }
+
+        private fun removeAt(index: Int): ScheduledTask {
+            val first = items[index]
             val last = items.removeAt(items.lastIndex)
-            if (items.isNotEmpty()) {
-                items[0] = last
-                siftDown()
+            if (index < items.size) {
+                items[index] = last
+                if (index > 0 && items[index] > items[(index - 1) / 2]) {
+                    siftUp(index)
+                } else {
+                    siftDown(index)
+                }
             }
             return first
         }

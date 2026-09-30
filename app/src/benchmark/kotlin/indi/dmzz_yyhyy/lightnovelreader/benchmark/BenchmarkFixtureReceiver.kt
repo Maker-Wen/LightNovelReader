@@ -20,6 +20,9 @@ import indi.dmzz_yyhyy.lightnovelreader.data.statistics.Count
 import io.nightfish.lightnovelreader.api.book.WordCount
 import io.nightfish.lightnovelreader.api.content.builder.ContentBuilder
 import io.nightfish.lightnovelreader.api.content.builder.paragraph
+import io.nightfish.lightnovelreader.api.content.component.data.ImageComponentData
+import io.nightfish.lightnovelreader.api.userdata.BooleanUserData
+import io.nightfish.lightnovelreader.api.userdata.UserDataPath
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
@@ -31,9 +34,21 @@ class BenchmarkFixtureReceiver : BroadcastReceiver() {
         Thread {
             try {
                 val result = when (intent.action) {
+                    ACTION_SEEK_PROBE -> ReaderSeekBenchmarkController.handle(intent)
+
                     ACTION_SEED -> {
+                        val paragraphCount = intent.getIntExtra("paragraphCount", PROGRESS_PARAGRAPH_COUNT)
+                            .coerceIn(1, 1000)
                         runBlocking {
-                            seed(LightNovelReaderDatabase.getInstance(context))
+                            seed(
+                                LightNovelReaderDatabase.getInstance(context),
+                                paragraphCount,
+                                singleChapter = intent.getBooleanExtra("singleChapter", false),
+                                imageUri = intent.getStringExtra("imageUri")?.takeIf { it.isNotBlank() },
+                                simplifiedTraditional = intent.getBooleanExtra("simplifiedTraditional", false),
+                                paged = intent.getBooleanExtra("paged", false),
+                                popupTitles = intent.getBooleanExtra("popupTitles", false),
+                            )
                         }
                         "seed=SUCCEEDED"
                     }
@@ -49,14 +64,15 @@ class BenchmarkFixtureReceiver : BroadcastReceiver() {
                     }
 
                     ACTION_REPORT_PROGRESS -> {
-                        val progress = runBlocking {
-                            LightNovelReaderDatabase.getInstance(context)
-                                .userReadingDataDao()
-                                .getEntity(BOOK_ID)
-                                ?.currentChapterReadingProgressMap
-                                ?.get(CHAPTER_ONE_ID)
+                        val chapterId = intent.getStringExtra("chapterId") ?: CHAPTER_ONE_ID
+                        val (readingData, locationHash) = runBlocking {
+                            val database = LightNovelReaderDatabase.getInstance(context)
+                            database.userReadingDataDao().getEntity(BOOK_ID) to
+                                database.userDataDao().get("reader.reading_location.$BOOK_ID.$chapterId")
                         }
-                        "progress=${progress ?: -1f}"
+                        val progress = readingData?.currentChapterReadingProgressMap?.get(chapterId)
+                        val maxProgress = readingData?.maxChapterReadingProgressMap?.get(chapterId)
+                        "progress=${progress ?: -1f},maxProgress=${maxProgress ?: -1f},locationHash=$locationHash"
                     }
 
                     ACTION_EXTEND_RAPID_CHAPTER_CHAIN -> {
@@ -64,6 +80,15 @@ class BenchmarkFixtureReceiver : BroadcastReceiver() {
                             extendRapidChapterChain(LightNovelReaderDatabase.getInstance(context))
                         }
                         "rapid-chapters=SUCCEEDED"
+                    }
+
+                    ACTION_EMPTY_LAST_CHAPTER -> {
+                        runBlocking {
+                            val dao = LightNovelReaderDatabase.getInstance(context).chapterContentDao()
+                            val chapter = requireNotNull(dao.get(CHAPTER_TWO_ID))
+                            dao.update(chapter.copy(content = ContentBuilder().build()))
+                        }
+                        "empty-last-chapter=SUCCEEDED"
                     }
 
                     else -> "unsupported-action=${intent.action}"
@@ -80,7 +105,28 @@ class BenchmarkFixtureReceiver : BroadcastReceiver() {
         }.start()
     }
 
-    private suspend fun seed(database: LightNovelReaderDatabase) {
+    private suspend fun seed(
+        database: LightNovelReaderDatabase,
+        paragraphCount: Int,
+        singleChapter: Boolean,
+        imageUri: String?,
+        simplifiedTraditional: Boolean,
+        paged: Boolean,
+        popupTitles: Boolean,
+    ) {
+        if (simplifiedTraditional) {
+            BooleanUserData(
+                UserDataPath.Reader.EnableSimplifiedTraditionalTransform.path,
+                database.userDataDao(),
+            ).set(true)
+        }
+        if (paged) {
+            BooleanUserData(UserDataPath.Reader.IsUsingFlipPage.path, database.userDataDao()).set(true)
+        }
+        val firstTitle = if (popupTitles) "短章" else "Benchmark Chapter One"
+        val secondTitle = if (popupTitles) {
+            "这是用于验证阅读进度浮窗宽高与居中位置在超长章节名称下保持稳定的第二章标题"
+        } else "Benchmark Chapter Two"
         val now = LocalDateTime.now()
         val book = BookInformationEntity(
             id = BOOK_ID,
@@ -112,6 +158,11 @@ class BenchmarkFixtureReceiver : BroadcastReceiver() {
             )
         )
 
+        if (singleChapter) {
+            // Tests can reseed after the standard @Before fixture. Remove its second volume so
+            // every progress-track destination is structurally guaranteed to stay in chapter one.
+            database.bookVolumesDao().deleteByBookIds(listOf(BOOK_ID))
+        }
         database.bookVolumesDao().insertVolume(
             VolumeEntity(
                 bookId = BOOK_ID,
@@ -121,18 +172,20 @@ class BenchmarkFixtureReceiver : BroadcastReceiver() {
                 index = 0,
             )
         )
-        database.bookVolumesDao().insertVolume(
-            VolumeEntity(
-                bookId = BOOK_ID,
-                volumeId = SECOND_VOLUME_ID,
-                volumeTitle = "Benchmark Bonus Volume",
-                chapterIds = listOf(CHAPTER_TWO_ID),
-                index = 1,
+        if (!singleChapter) {
+            database.bookVolumesDao().insertVolume(
+                VolumeEntity(
+                    bookId = BOOK_ID,
+                    volumeId = SECOND_VOLUME_ID,
+                    volumeTitle = "Benchmark Bonus Volume",
+                    chapterIds = listOf(CHAPTER_TWO_ID),
+                    index = 1,
+                )
             )
-        )
+        }
         database.bookVolumesDao().insertChapterInformationEntities(
-            ChapterInformationEntity(CHAPTER_ONE_ID, "Benchmark Chapter One"),
-            ChapterInformationEntity(CHAPTER_TWO_ID, "Benchmark Chapter Two"),
+            ChapterInformationEntity(CHAPTER_ONE_ID, firstTitle),
+            ChapterInformationEntity(CHAPTER_TWO_ID, secondTitle),
         )
         database.bookVolumesDao().insertVolume(
             VolumeEntity(
@@ -149,37 +202,44 @@ class BenchmarkFixtureReceiver : BroadcastReceiver() {
         )
 
         val firstContent = ContentBuilder().apply {
-            appendProgressParagraphs("Benchmark progress paragraph")
+            if (imageUri != null) {
+                paragraph { text("Benchmark before delayed image.") }
+                component(ImageComponentData(Uri.parse(imageUri)))
+                paragraph { text("Benchmark after delayed image.") }
+            }
+            appendProgressParagraphs("Benchmark progress paragraph", paragraphCount, simplifiedTraditional)
         }
             .paragraph { text(CHAPTER_ONE_END_MARKER) }
             .build()
         val secondContent = ContentBuilder()
             .paragraph { text(CHAPTER_TWO_START_MARKER) }
-            .apply { appendProgressParagraphs("Benchmark chapter two progress paragraph") }
+            .apply {
+                appendProgressParagraphs("Benchmark chapter two progress paragraph", paragraphCount, simplifiedTraditional)
+            }
             .build()
         database.chapterContentDao().update(
             ChapterContentEntity(
                 id = CHAPTER_ONE_ID,
-                title = "Benchmark Chapter One",
+                title = firstTitle,
                 content = firstContent,
                 prevChapter = "",
-                nextChapter = CHAPTER_TWO_ID,
+                nextChapter = if (singleChapter) "" else CHAPTER_TWO_ID,
             )
         )
         database.chapterContentDao().update(
             ChapterContentEntity(
                 id = CHAPTER_TWO_ID,
-                title = "Benchmark Chapter Two",
+                title = secondTitle,
                 content = secondContent,
                 prevChapter = CHAPTER_ONE_ID,
                 nextChapter = "",
             )
         )
         val secondBookFirstContent = ContentBuilder().apply {
-            appendProgressParagraphs("Second book chapter one progress paragraph")
+            appendProgressParagraphs("Second book chapter one progress paragraph", paragraphCount)
         }.build()
         val secondBookSecondContent = ContentBuilder().apply {
-            appendProgressParagraphs("Second book chapter two progress paragraph")
+            appendProgressParagraphs("Second book chapter two progress paragraph", paragraphCount)
         }.build()
         database.chapterContentDao().update(
             ChapterContentEntity(
@@ -205,10 +265,10 @@ class BenchmarkFixtureReceiver : BroadcastReceiver() {
                 id = BOOK_ID,
                 lastReadTime = now,
                 totalReadTime = 3_600,
-                readingProgress = 0.25f,
+                readingProgress = if (imageUri != null || popupTitles) 0f else 0.25f,
                 lastReadChapterId = CHAPTER_ONE_ID,
-                lastReadChapterTitle = "Benchmark Chapter One",
-                currentChapterReadingProgressMap = mapOf(CHAPTER_ONE_ID to 0.25f),
+                lastReadChapterTitle = firstTitle,
+                currentChapterReadingProgressMap = mapOf(CHAPTER_ONE_ID to if (imageUri != null || popupTitles) 0f else 0.25f),
                 maxChapterReadingProgressMap = mapOf(CHAPTER_ONE_ID to 0.5f),
             )
         )
@@ -293,11 +353,16 @@ class BenchmarkFixtureReceiver : BroadcastReceiver() {
         database.dailyCountDao().insert(DailyCountEntity(today, count))
     }
 
-    private fun ContentBuilder.appendProgressParagraphs(prefix: String) {
-        repeat(PROGRESS_PARAGRAPH_COUNT) { index ->
+    private fun ContentBuilder.appendProgressParagraphs(
+        prefix: String,
+        paragraphCount: Int = PROGRESS_PARAGRAPH_COUNT,
+        simplifiedTraditional: Boolean = false,
+    ) {
+        val conversionMarker = if (simplifiedTraditional) "汉语测试。 " else ""
+        repeat(paragraphCount) { index ->
             paragraph {
                 text(
-                    "$prefix ${index + 1}. This deterministic component exercises layout, " +
+                    "$prefix ${index + 1}. ${conversionMarker}This deterministic component exercises layout, " +
                         "scrolling, pagination, progress restoration, and formatting."
                 )
             }
@@ -345,6 +410,7 @@ class BenchmarkFixtureReceiver : BroadcastReceiver() {
     }
 
     companion object {
+        const val ACTION_SEEK_PROBE = "indi.dmzz_yyhyy.lightnovelreader.benchmark.SEEK_PROBE"
         const val ACTION_SEED = "indi.dmzz_yyhyy.lightnovelreader.benchmark.SEED"
         const val ACTION_REEMIT_CHAPTER =
             "indi.dmzz_yyhyy.lightnovelreader.benchmark.REEMIT_CHAPTER"
@@ -352,6 +418,8 @@ class BenchmarkFixtureReceiver : BroadcastReceiver() {
             "indi.dmzz_yyhyy.lightnovelreader.benchmark.REPORT_PROGRESS"
         const val ACTION_EXTEND_RAPID_CHAPTER_CHAIN =
             "indi.dmzz_yyhyy.lightnovelreader.benchmark.EXTEND_RAPID_CHAPTER_CHAIN"
+        const val ACTION_EMPTY_LAST_CHAPTER =
+            "indi.dmzz_yyhyy.lightnovelreader.benchmark.EMPTY_LAST_CHAPTER"
 
         const val BOOK_ID = "9999999"
         const val SECOND_BOOK_ID = "9999998"

@@ -11,11 +11,15 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -26,12 +30,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeContent
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.navigationBarsIgnoringVisibility
+import androidx.compose.foundation.layout.statusBarsIgnoringVisibility
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.BottomAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -84,6 +88,7 @@ import com.github.michaelbull.result.map
 import com.github.michaelbull.result.onErr
 import com.github.michaelbull.result.onOk
 import indi.dmzz_yyhyy.lightnovelreader.R
+import indi.dmzz_yyhyy.lightnovelreader.ui.book.reader.content.ReaderPosition
 import indi.dmzz_yyhyy.lightnovelreader.ui.book.reader.content.ContentComponent
 import indi.dmzz_yyhyy.lightnovelreader.ui.book.reader.content.scroll.ScrollContentUiState
 import indi.dmzz_yyhyy.lightnovelreader.ui.components.AnimatedText
@@ -114,11 +119,28 @@ fun ReaderScreen(
     onClickPrevChapter: () -> Unit,
     onClickNextChapter: () -> Unit,
     onChangeChapter: (chapterId: String) -> Unit,
-    onClickReaderStyleSettings: () -> Unit
+    onClickReaderStyleSettings: () -> Unit,
+    onBeginSeek: () -> ReaderPosition?,
+    onSeek: (Float) -> Unit,
+    onCancelSeek: () -> Unit,
+    onReturnToOrigin: () -> Unit,
+    onClearReturnPosition: () -> Unit
 ) {
+    var previewProgress: Float? by remember { mutableStateOf(null) }
+    val progressMap = readingScreenUiState.progressMap
+    val displayedProgress = previewProgress ?: readingScreenUiState.position?.let(progressMap::progress) ?: 0f
+    val displayedChapter = previewProgress?.let(progressMap::target)?.chapterId
+        ?: readingScreenUiState.position?.chapterId
+    DisposableEffect(Unit) {
+        onDispose { onCancelSeek() }
+    }
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
     var isImmersive by remember { mutableStateOf(true) }
+    LaunchedEffect(isImmersive) {
+        if (isImmersive) onClearReturnPosition()
+    }
     val context = LocalContext.current
+    val menuOffsetPx = with(LocalDensity.current) { 8.dp.roundToPx() }
     val snackbarHostState = LocalSnackbarHost.current
     val backBlockMode = settingState.backBlockMode
     var lastBackPressTime: Long by remember { mutableLongStateOf(0) }
@@ -172,8 +194,8 @@ fun ReaderScreen(
         topBar = {
             AnimatedVisibility(
                 visible = !isImmersive,
-                enter = expandVertically(),
-                exit = shrinkVertically()
+                enter = fadeIn(tween(180)) + slideInVertically(tween(180)) { -menuOffsetPx },
+                exit = fadeOut(tween(150)) + slideOutVertically(tween(150)) { -menuOffsetPx }
             ) {
                 TopBar(
                     onClickBackButton = onClickBackButton,
@@ -197,20 +219,54 @@ fun ReaderScreen(
         bottomBar = {
             AnimatedVisibility(
                 visible = !isImmersive,
-                enter = expandVertically(),
-                exit = shrinkVertically()
+                enter = fadeIn(tween(180)) + slideInVertically(tween(180)) { menuOffsetPx },
+                exit = fadeOut(tween(150)) + slideOutVertically(tween(150)) { menuOffsetPx }
             ) {
-                BottomBar(
-                    hasNextChapter = readingScreenUiState.contentUiState?.readingChapterContent
-                        ?.get()
-                        ?.hasNextChapter() ?: false,
-                    hasPrevChapter = readingScreenUiState.contentUiState?.readingChapterContent
-                        ?.get()
-                        ?.hasPrevChapter() ?: false,
-                    onClickPrevChapter = onClickPrevChapter,
-                    onClickNextChapter = onClickNextChapter,
-                    onClickSettings = { showSettingsBottomSheet = true },
-                    onClickChapterSelector = { showChapterSelectionBottomSheet = true },
+                ReaderBottomBar(
+                    progress = displayedProgress,
+                    originProgress = readingScreenUiState.originPosition?.takeIf { position ->
+                        position.fraction.isFinite() && progressMap.chapters.any { it.id == position.chapterId }
+                    }?.let(progressMap::progress),
+                    previewTitle = displayedChapter?.let(progressMap::title).orEmpty(),
+                    isPreviewing = previewProgress != null,
+                    enabled = !isImmersive && !progressMap.isEmpty,
+                    menuInteractive = !isImmersive,
+                    onBegin = {
+                        val frozen = onBeginSeek()
+                        val currentMap = readingScreenUiState.progressMap
+                        val mapped = frozen?.takeIf { position ->
+                            position.fraction.isFinite() && currentMap.chapters.any { it.id == position.chapterId }
+                        }?.let(currentMap::progress)
+                        ReaderSeekStart(
+                            formalOriginProgress = mapped.takeIf {
+                                frozen != null && frozen === readingScreenUiState.originPosition
+                            },
+                            temporaryOriginProgress = mapped
+                        )
+                    },
+                    onPreview = {
+                        previewProgress = it
+                    },
+                    onCommit = {
+                        previewProgress?.let(onSeek)
+                        previewProgress = null
+                    },
+                    onCancel = {
+                        previewProgress = null
+                        onCancelSeek()
+                    },
+                    onReturn = {
+                        previewProgress = null
+                        onReturnToOrigin()
+                    },
+                    // Guard the state immediately, before disabled semantics are recomposed.
+                    onPrevious = { if (!isImmersive) onClickPrevChapter() },
+                    onNext = { if (!isImmersive) onClickNextChapter() },
+                    onDirectory = { if (!isImmersive) showChapterSelectionBottomSheet = true },
+                    onSettings = { if (!isImmersive) showSettingsBottomSheet = true },
+                    canPrevious = readingScreenUiState.contentUiState?.readingChapterContent?.get()?.hasPrevChapter() ?: false,
+                    canNext = readingScreenUiState.contentUiState?.readingChapterContent?.get()?.hasNextChapter() ?: false,
+                    modifier = Modifier.navigationBarsPadding()
                 )
             }
         },
@@ -245,7 +301,9 @@ fun ReaderScreen(
             updateTotalReadingTime = updateTotalReadingTime,
             onClickPrevChapter = onClickPrevChapter,
             onClickNextChapter = onClickNextChapter,
-            onChangeIsImmersive = { isImmersive = !isImmersive }
+            onChangeIsImmersive = {
+                isImmersive = !isImmersive
+            }
         )
     }
     AnimatedVisibility(visible = showSettingsBottomSheet) {
@@ -317,8 +375,7 @@ fun ReaderScreen(
     }
 }
 
-
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun Content(
     isImmersive: Boolean,
@@ -335,17 +392,9 @@ fun Content(
     val window = activity.window
     val density = LocalDensity.current
 
-    val stableSafeTopDp by remember {
-        mutableStateOf(
-            with(density) {
-                WindowInsetsCompat
-                    .toWindowInsetsCompat(activity.window.decorView.rootWindowInsets)
-                    .getInsetsIgnoringVisibility(WindowInsetsCompat.Type.statusBars())
-                    .top
-                    .toDp()
-            }
-        )
-    }
+    // Menu visibility changes system bars, but never the body pagination viewport.
+    val stableSafeTopDp = with(density) { WindowInsets.statusBarsIgnoringVisibility.getTop(density).toDp() }
+    val stableSafeBottomDp = with(density) { WindowInsets.navigationBarsIgnoringVisibility.getBottom(density).toDp() }
 
     val originalUiFlags = remember {
         @Suppress("DEPRECATION")
@@ -464,9 +513,7 @@ fun Content(
                         if (settingState.autoPadding)
                             PaddingValues(
                                 top = stableSafeTopDp,
-                                bottom = with(density) {
-                                    WindowInsets.safeContent.getBottom(density).toDp()
-                                } + if (isEnableIndicator) 40.dp else 0.dp,
+                                bottom = stableSafeBottomDp + if (isEnableIndicator) 40.dp else 0.dp,
                                 start = 16.dp,
                                 end = 16.dp
                             )
@@ -486,9 +533,9 @@ fun Content(
 
             AnimatedVisibility(
                 modifier = Modifier.align(Alignment.BottomCenter),
-                visible = isEnableIndicator,
-                enter = expandVertically(),
-                exit = shrinkVertically()
+                visible = isEnableIndicator && isImmersive,
+                enter = fadeIn(tween(150)),
+                exit = fadeOut(tween(90))
             ) {
                 Indicator(
                     Modifier
@@ -585,98 +632,6 @@ private fun TopBar(
         },
         scrollBehavior = scrollBehavior
     )
-}
-
-@Composable
-private fun BottomBar(
-    hasPrevChapter: Boolean,
-    hasNextChapter: Boolean,
-    onClickPrevChapter: () -> Unit,
-    onClickNextChapter: () -> Unit,
-    onClickSettings: () -> Unit,
-    onClickChapterSelector: () -> Unit
-) {
-    BottomAppBar {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            TextButton(
-                onClick = onClickPrevChapter,
-                enabled = hasPrevChapter
-            ) {
-                Column(
-                    modifier = Modifier.padding(horizontal = 6.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Icon(
-                        painter = painterResource(R.drawable.arrow_back_24px),
-                        contentDescription = null,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(Modifier.height(2.dp))
-                    Text(
-                        text = stringResource(R.string.previous_chapter),
-                        style = typography.labelSmall
-                    )
-                }
-            }
-
-            Row(
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                IconButton(
-                    enabled = false,
-                    onClick = {
-                        // TODO 添加至书签
-                    }
-                ) {
-                    Icon(
-                        painter = painterResource(R.drawable.outline_bookmark_24px),
-                        contentDescription = "mark"
-                    )
-                }
-
-                IconButton(onClick = onClickChapterSelector) {
-                    Icon(
-                        painter = painterResource(id = R.drawable.menu_24px),
-                        contentDescription = "menu"
-                    )
-                }
-
-                IconButton(onClick = onClickSettings) {
-                    Icon(
-                        painter = painterResource(R.drawable.outline_settings_24px),
-                        contentDescription = "setting"
-                    )
-                }
-            }
-
-            TextButton(
-                onClick = onClickNextChapter,
-                enabled = hasNextChapter
-            ) {
-                Column(
-                    modifier = Modifier.padding(horizontal = 6.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Icon(
-                        painter = painterResource(R.drawable.arrow_forward_24px),
-                        contentDescription = null,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(Modifier.height(2.dp))
-                    Text(
-                        text = stringResource(R.string.next_chapter),
-                        style = typography.labelSmall
-                    )
-                }
-            }
-        }
-    }
 }
 
 @Composable

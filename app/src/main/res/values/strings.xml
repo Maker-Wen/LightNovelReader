@@ -15,6 +15,7 @@
 
     <!-- Operations -->
     <string name="cancel">Cancel</string>
+    <string name="retry">Retry</string>
     <string name="apply">Apply</string>
     <string name="confirm">Confirm</string>
     <string name="done">Done</string>
@@ -52,6 +53,9 @@
     <string name="choose_light_bg">Choose Light Background</string>
     <string name="choose_dark_bg">Choose Dark Background</string>
     <string name="reader_back_press_again">Press back again to exit reading</string>
+    <string name="reader_directory">Contents</string>
+    <string name="reader_book_progress">Book position</string>
+    <string name="reader_return_position">Return to the position before jumping</string>
     <string name="previous_chapter">Previous Chapter</string>
     <string name="next_chapter">Next Chapter</string>
     <string name="save_rule">Save rule</string>
@@ -137,6 +141,8 @@
     <string name="theme_settings">Theme</string>
     <string name="app_settings">App</string>
     <string name="app_updates">Updates</string>
+    <string name="settings_manual_apk_updates">Manual APK Updates</string>
+    <string name="settings_manual_apk_updates_desc">To update this version, manually install an APK provided by this project.</string>
     <string name="settings_auto_check_updates">Auto Check for Updates</string>
     <string name="settings_auto_check_updates_desc">Enable automatic update checks upon app launch</string>
     <string name="settings_update_channel">Test Update Channel</string>

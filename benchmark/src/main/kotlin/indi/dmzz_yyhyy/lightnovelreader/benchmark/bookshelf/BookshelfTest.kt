@@ -128,8 +128,8 @@ class BookshelfTest : UiAutomatorTest() {
         longClickText("Benchmark Sample Novel")
         clickDescription("remove")
 
-        assertText("Nothing Here")
         assertTextNotVisible("Benchmark Sample Novel")
+        assertText("Second Benchmark Novel")
     }
 
     @Test

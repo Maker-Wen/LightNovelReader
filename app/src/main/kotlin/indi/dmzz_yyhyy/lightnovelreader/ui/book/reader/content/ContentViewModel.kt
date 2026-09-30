@@ -5,5 +5,7 @@ interface ContentViewModel {
     fun changeBookId(id: String)
     fun loadNextChapter()
     fun loadPrevChapter()
-    fun changeChapter(id: String)
+    fun changeChapter(id: String, position: ChapterPosition? = null, requestId: Long = 0)
+    fun capturePosition(): ReaderPosition?
+    fun dispose()
 }

@@ -33,8 +33,8 @@ class SettingsTest : UiAutomatorTest() {
     @Test
     fun readingThemeFormattingAndConversionControlsOpen() {
         openSettings()
-        clickText("Theme & Paper")
-        assertText("Theme & Paper")
+        clickText("App Theme")
+        assertText("App Theme")
         assertText("Dynamic Colors")
         assertText("Light Theme")
         assertText("Dark Theme")
@@ -99,7 +99,7 @@ class SettingsTest : UiAutomatorTest() {
 
         clickScrolledText("Import User Data")
         device.waitForIdle()
-        assertForegroundPackage("com.android.documentsui")
+        assertDocumentPicker()
         pressBack()
 
         launchApp()
@@ -174,20 +174,23 @@ class SettingsTest : UiAutomatorTest() {
     @Test
     fun themeSelectionAndReaderTypographyControlsAreReachable() {
         openSettings()
-        clickText("Theme & Paper")
+        clickText("App Theme")
 
         clickText("Light Theme")
         assertText("Default")
         assertText("Designer")
         clickText("Designer")
 
-        scrollToText("Paper")
+        pressBack()
+        clickText("Reader Style")
+        assertText("Reader Style")
+        assertText("Paper")
         scrollToText("Background Image")
         scrollToText("Text Color")
         scrollToText("Text Font")
         scrollToText("Font Weight")
         scrollToText("Font Size")
-        scrollToText("Line Spacing")
+        scrollToText("Line Height")
     }
 
     @Test
@@ -251,7 +254,7 @@ class SettingsTest : UiAutomatorTest() {
         assertText("Settings")
         scrollToText("Share")
         clickScrolledText("Export to File")
-        assertForegroundPackage("com.android.documentsui")
+        assertDocumentPicker()
     }
 
     @Test

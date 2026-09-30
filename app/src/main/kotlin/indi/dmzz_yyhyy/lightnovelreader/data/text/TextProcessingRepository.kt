@@ -1,7 +1,9 @@
 package indi.dmzz_yyhyy.lightnovelreader.data.text
 
+import indi.dmzz_yyhyy.lightnovelreader.BuildConfig
 import indi.dmzz_yyhyy.lightnovelreader.data.content.ContentComponentRepository
 import indi.dmzz_yyhyy.lightnovelreader.data.format.FormatRepository
+import indi.dmzz_yyhyy.lightnovelreader.ui.book.reader.ReaderBenchmarkProbe
 import indi.dmzz_yyhyy.lightnovelreader.utils.ofId
 import io.nightfish.lightnovelreader.api.book.BookInformation
 import io.nightfish.lightnovelreader.api.book.BookVolumes
@@ -54,13 +56,25 @@ class TextProcessingRepository @Inject constructor(
     fun processChapterContent(bookId: String, block: () -> ChapterContent): ChapterContent =
         process(block.invoke()) { processor ->
             {
-                processor.processChapterContent(
-                    bookId, it, ComponentProcessor(
-                        contentComponentRepository.serializeMap,
-                        contentComponentRepository.dataKClassMap,
-                        it.content
+                if (BuildConfig.BENCHMARK) {
+                    val name = when (processor) {
+                        is SimplifiedTraditionalProcessor -> "SimplifiedTraditionalProcessor"
+                        is FormatRepository -> "FormatRepository"
+                        else -> "PluginProcessor"
+                    }
+                    ReaderBenchmarkProbe.beginChapterProcessor(it.id, name)
+                }
+                try {
+                    processor.processChapterContent(
+                        bookId, it, ComponentProcessor(
+                            contentComponentRepository.serializeMap,
+                            contentComponentRepository.dataKClassMap,
+                            it.content
+                        )
                     )
-                )
+                } finally {
+                    if (BuildConfig.BENCHMARK) ReaderBenchmarkProbe.endSection()
+                }
             }
         }
 

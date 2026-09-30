@@ -87,7 +87,7 @@ class WorkManagerTest : UiAutomatorTest() {
         setFirstTextField(LIVE_BOOK_QUERY)
         // The real source rate-limits searches from the same public IP.
         SystemClock.sleep(6_000)
-        device.pressEnter()
+        submitSearch()
         waitForDescription("export", NETWORK_WORK_TIMEOUT)
 
         scrollToText("Not Cached")
@@ -173,7 +173,7 @@ class WorkManagerTest : UiAutomatorTest() {
     }
 
     private fun saveCreatedDocument(fileName: String) {
-        assertForegroundPackage(DOCUMENTS_PACKAGE)
+        val documentsPackage = assertDocumentPicker()
         val nameField = device.wait(
             Until.findObject(By.res("android", "title").clazz("android.widget.EditText")),
             TIMEOUT,
@@ -188,7 +188,7 @@ class WorkManagerTest : UiAutomatorTest() {
 
         // DocumentsUI can still ask for replacement if media indexing has not
         // observed the exact-file cleanup yet.
-        if (device.hasObject(By.pkg(DOCUMENTS_PACKAGE))) {
+        if (device.hasObject(By.pkg(documentsPackage))) {
             device.findObject(By.res("android", "button1"))?.click()
         }
         assertTrue(
@@ -198,11 +198,11 @@ class WorkManagerTest : UiAutomatorTest() {
     }
 
     private fun selectDocument(fileName: String) {
-        assertForegroundPackage(DOCUMENTS_PACKAGE)
+        val documentsPackage = assertDocumentPicker()
         // Some DocumentsUI builds hide known extensions in their accessibility
         // text even though the selected URI still points at the complete name.
         val displayName = fileName.substringBeforeLast('.')
-        val fileList = device.findObject(By.res(DOCUMENTS_PACKAGE, "dir_list"))
+        val fileList = device.findObject(By.res(documentsPackage, "dir_list"))
         // DocumentsUI remembers the previous directory scroll position. Return
         // to the beginning before searching so an alphabetically early fixture
         // is not left above the viewport.
@@ -226,7 +226,7 @@ class WorkManagerTest : UiAutomatorTest() {
         )
         file.click()
         device.waitForIdle()
-        if (device.hasObject(By.pkg(DOCUMENTS_PACKAGE))) {
+        if (device.hasObject(By.pkg(documentsPackage))) {
             device.findObject(By.res("android", "button1"))?.click()
         }
         assertTrue(
@@ -258,7 +258,6 @@ class WorkManagerTest : UiAutomatorTest() {
     }
 
     companion object {
-        private const val DOCUMENTS_PACKAGE = "com.android.documentsui"
         private const val SNAPSHOT_FILE = "BenchmarkUiSnapshot.lnr"
         private const val BOOKSHELF_FILE = "BenchmarkUiBookshelf.lnr"
         private const val EPUB_FILE = "BenchmarkUiNovel.epub"

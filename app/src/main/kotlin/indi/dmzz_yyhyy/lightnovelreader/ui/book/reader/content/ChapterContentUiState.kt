@@ -9,7 +9,8 @@ class ChapterContentUiState(
     val title: String,
     val content: List<AbstractContentComponentData>,
     val prevChapter: String?,
-    val nextChapter: String?
+    val nextChapter: String?,
+    val contentKey: String = ""
 ) {
     fun hasPrevChapter(): Boolean = prevChapter != null
 

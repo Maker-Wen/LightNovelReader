@@ -84,33 +84,8 @@ class LocalBookDataSource @Inject constructor(
         )
     }
 
-    override suspend fun updateUserReadingData(
-        id: String,
-        update: (UserReadingData) -> UserReadingData
-    ) {
-        val userReadingData = userReadingDataDao.getEntity(id)?.let {
-            UserReadingData(
-                it.id,
-                it.lastReadTime,
-                it.totalReadTime,
-                it.readingProgress,
-                it.lastReadChapterId,
-                it.lastReadChapterTitle,
-                it.currentChapterReadingProgressMap,
-                it.maxChapterReadingProgressMap
-            )
-        } ?: UserReadingData(id)
-        val new = update(userReadingData)
-        userReadingDataDao.insert(
-            id = new.id,
-            lastReadTime = new.lastReadTime ?: LocalDateTime.MIN,
-            totalReadTime = new.totalReadTime,
-            readingProgress = new.readingProgress,
-            lastReadChapterId = new.lastReadChapterId ?: "",
-            lastReadChapterTitle = new.lastReadChapterTitle ?: "",
-            currentChapterReadingProgressMap = new.currentChapterReadingProgressMap,
-            maxChapterReadingProgressMap = new.maxChapterReadingProgressMap
-        )
+    override suspend fun updateUserReadingData(id: String, update: (UserReadingData) -> UserReadingData) {
+        userReadingDataDao.updateUserReadingData(id, update)
     }
 
     override suspend fun getAllUserReadingData(): List<UserReadingData> =

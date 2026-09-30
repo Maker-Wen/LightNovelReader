@@ -4,10 +4,12 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import androidx.room.TypeConverters
 import indi.dmzz_yyhyy.lightnovelreader.data.local.room.converter.ChapterReadingProgressMapConverter
 import indi.dmzz_yyhyy.lightnovelreader.data.local.room.converter.LocalDateTimeConverter
 import indi.dmzz_yyhyy.lightnovelreader.data.local.room.entity.UserReadingDataEntity
+import io.nightfish.lightnovelreader.api.book.UserReadingData
 import kotlinx.coroutines.flow.Flow
 import java.time.LocalDateTime
 
@@ -34,6 +36,33 @@ interface UserReadingDataDao {
 
     @Query("select * from user_reading_data where id = :id")
     suspend fun getEntity(id: String): UserReadingDataEntity?
+
+    @Transaction
+    suspend fun updateUserReadingData(id: String, update: (UserReadingData) -> UserReadingData) {
+        val current = getEntity(id)?.let {
+            UserReadingData(
+                it.id,
+                it.lastReadTime,
+                it.totalReadTime,
+                it.readingProgress,
+                it.lastReadChapterId,
+                it.lastReadChapterTitle,
+                it.currentChapterReadingProgressMap,
+                it.maxChapterReadingProgressMap
+            )
+        } ?: UserReadingData(id)
+        val new = update(current)
+        insert(
+            id = new.id,
+            lastReadTime = new.lastReadTime ?: LocalDateTime.MIN,
+            totalReadTime = new.totalReadTime,
+            readingProgress = new.readingProgress,
+            lastReadChapterId = new.lastReadChapterId ?: "",
+            lastReadChapterTitle = new.lastReadChapterTitle ?: "",
+            currentChapterReadingProgressMap = new.currentChapterReadingProgressMap,
+            maxChapterReadingProgressMap = new.maxChapterReadingProgressMap
+        )
+    }
 
     @Query("select * from user_reading_data where id = :id")
     fun getEntityFlow(id: String): Flow<UserReadingDataEntity?>

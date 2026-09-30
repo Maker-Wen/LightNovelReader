@@ -13,9 +13,11 @@ class ProxyCachedWebBookDataSource(
         key: String,
         block: () -> Result<T, WebRequestError>
     ): Result<T, WebRequestError> {
-        val value = origin.cache?.getCache<T>(key.hashCode()) ?: return block.invoke()
+        val cache = origin.cache ?: return block.invoke()
+        val cacheKey = key.hashCode()
+        val value = cache.getCache<T>(cacheKey) ?: return block.invoke()
             .onOk {
-                origin.cache?.cache(id.hashCode(), it)
+                cache.cache(cacheKey, it)
             }
         return Ok(value)
     }
@@ -30,11 +32,12 @@ class ProxyCachedWebBookDataSource(
             proxiedWebBookDataSource.getBookVolumes(id, priority)
         }
 
+    // Preserve the ID boundary, e.g. ("ab", "c") and ("a", "bc").
     override suspend fun getChapterContent(
         chapterId: String,
         bookId: String,
         priority: WebDataSourcePriority
-    ) = getOrCache(chapterId + bookId) {
+    ) = getOrCache("${chapterId.length}:$chapterId$bookId") {
         proxiedWebBookDataSource.getChapterContent(chapterId, bookId, priority)
     }
 }

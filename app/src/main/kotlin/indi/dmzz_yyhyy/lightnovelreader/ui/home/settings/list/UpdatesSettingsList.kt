@@ -6,7 +6,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import indi.dmzz_yyhyy.lightnovelreader.BuildConfig
 import indi.dmzz_yyhyy.lightnovelreader.R
+import io.nightfish.lightnovelreader.api.ui.components.SettingsBasicEntry
 import io.nightfish.lightnovelreader.api.ui.components.SettingsClickableEntry
 import io.nightfish.lightnovelreader.api.ui.components.SettingsMenuEntry
 import io.nightfish.lightnovelreader.api.ui.components.SettingsSwitchEntry
@@ -19,6 +21,16 @@ fun UpdatesSettingsList(
     settingState: SettingState,
     checkUpdate: () -> Unit,
 ) {
+    if (BuildConfig.INDEPENDENT_BUILD) {
+        SettingsBasicEntry(
+            modifier = Modifier.background(colorScheme.surfaceContainer),
+            painter = painterResource(R.drawable.deployed_code_update_24px),
+            title = stringResource(R.string.settings_manual_apk_updates),
+            description = stringResource(R.string.settings_manual_apk_updates_desc)
+        )
+        return
+    }
+
     SettingsSwitchEntry(
         modifier = Modifier.background(colorScheme.surfaceContainer),
         painter = painterResource(R.drawable.cloud_download_24px),

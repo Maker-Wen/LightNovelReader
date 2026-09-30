@@ -1,7 +1,9 @@
 package indi.dmzz_yyhyy.lightnovelreader.benchmark.ui
 
 import android.graphics.Rect
+import android.os.Build
 import android.os.SystemClock
+import android.view.accessibility.AccessibilityNodeInfo
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.Direction
@@ -199,8 +201,49 @@ abstract class UiAutomatorTest {
         assertEquals(packageName, device.currentPackageName)
     }
 
+    protected fun assertDocumentPicker(): String {
+        val deadline = SystemClock.uptimeMillis() + TIMEOUT
+        var packageName = device.currentPackageName
+        while (packageName != "com.android.documentsui" &&
+            packageName != "com.google.android.documentsui" &&
+            SystemClock.uptimeMillis() < deadline
+        ) {
+            SystemClock.sleep(100)
+            packageName = device.currentPackageName
+        }
+        assertTrue(
+            "Expected AOSP or Google DocumentsUI in the foreground, was: $packageName",
+            packageName == "com.android.documentsui" || packageName == "com.google.android.documentsui",
+        )
+        return packageName
+    }
+
     protected fun setFirstTextField(value: String) {
         setTextField(0, value)
+    }
+
+    protected fun submitSearch() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            device.pressEnter()
+            device.waitForIdle()
+            return
+        }
+        val selector = By.pkg(TARGET_PACKAGE).clazz("android.widget.EditText")
+        val field = device.wait(Until.findObject(selector), TIMEOUT)
+        assertNotNull("Search input was not visible", field)
+        field.click()
+        assertTrue("Search input did not gain focus",
+            device.wait(Until.hasObject(selector.focused(true)), TIMEOUT))
+        val editor = InstrumentationRegistry.getInstrumentation().uiAutomation
+            .rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+        assertNotNull("Focused search input was not exposed to accessibility", editor)
+        val focusedEditor = requireNotNull(editor)
+        assertEquals(TARGET_PACKAGE, focusedEditor.packageName?.toString())
+        assertEquals("android.widget.EditText", focusedEditor.className?.toString())
+        val action = AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER
+        assertTrue("Search input must expose its IME action", action in focusedEditor.actionList)
+        assertTrue("Search IME action was rejected", focusedEditor.performAction(action.id))
+        device.waitForIdle()
     }
 
     protected fun setTextField(index: Int, value: String) {

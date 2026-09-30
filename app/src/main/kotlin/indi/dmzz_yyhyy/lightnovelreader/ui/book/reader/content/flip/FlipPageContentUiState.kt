@@ -9,12 +9,14 @@ import androidx.compose.runtime.setValue
 import com.github.michaelbull.result.Result
 import indi.dmzz_yyhyy.lightnovelreader.ui.book.reader.content.ChapterContentUiState
 import indi.dmzz_yyhyy.lightnovelreader.ui.book.reader.content.ContentUiState
+import indi.dmzz_yyhyy.lightnovelreader.ui.book.reader.content.ReaderAnchor
+import indi.dmzz_yyhyy.lightnovelreader.ui.book.reader.content.ReaderPaginationLayout
 import io.nightfish.lightnovelreader.api.error.WebRequestError
 
 interface FlipPageContentUiState : ContentUiState {
-    val locatedComponentHash: Int?
-    val locatedFragmentHash: Int?
-    val locateComponent: (Int?, Int?) -> Unit
+    val updateLayout: (ReaderPaginationLayout) -> Unit
+    val updatePagination: (String, String, ReaderPaginationLayout, List<ReaderAnchor>, List<Int>) -> Unit
+    val updateResolvedPages: (String, String, ReaderPaginationLayout, List<ReaderAnchor>, List<Int>, ReaderAnchor) -> Unit
     val pagerState: FlipPagerState
     val prevChapterContent: Result<ChapterContentUiState, WebRequestError>?
     val nextChapterContent: Result<ChapterContentUiState, WebRequestError>?
@@ -64,6 +66,13 @@ class FlipPagerState {
         }
     }
 
+    internal fun clearTransition() {
+        pageOffset = 0f
+        pendingChapterDirection = 0
+        pendingChapterId = null
+        isAnimating = false
+    }
+
     internal fun reset(preserveChapterTransition: Boolean = false) {
         val transitionDirection = pendingChapterDirection
         val transitionChapterId = pendingChapterId
@@ -91,15 +100,11 @@ class MutableFlipPageContentUiState(
     override val loadPrevChapter: () -> Unit,
     override val changeChapter: (String) -> Unit,
     override val changeChapterAtBoundary: (String, Int) -> Unit,
+    override val retry: () -> Unit,
+    override val updateLayout: (ReaderPaginationLayout) -> Unit,
+    override val updatePagination: (String, String, ReaderPaginationLayout, List<ReaderAnchor>, List<Int>) -> Unit,
+    override val updateResolvedPages: (String, String, ReaderPaginationLayout, List<ReaderAnchor>, List<Int>, ReaderAnchor) -> Unit,
 ) : FlipPageContentUiState {
-    override var locatedComponentHash by mutableStateOf<Int?>(null)
-        private set
-    override var locatedFragmentHash by mutableStateOf<Int?>(null)
-        private set
-    override val locateComponent: (Int?, Int?) -> Unit = { componentHash, fragmentHash ->
-        locatedComponentHash = componentHash
-        locatedFragmentHash = fragmentHash
-    }
     override val pagerState = FlipPagerState()
     override var bookId by mutableStateOf("")
     override var readingChapterId: String? by mutableStateOf(null)
@@ -111,4 +116,5 @@ class MutableFlipPageContentUiState(
     override var nextChapterContent: Result<ChapterContentUiState, WebRequestError>? by mutableStateOf(null)
         internal set
     override var readingProgress by mutableFloatStateOf(0f)
+    override var isPositioning by mutableStateOf(true)
 }

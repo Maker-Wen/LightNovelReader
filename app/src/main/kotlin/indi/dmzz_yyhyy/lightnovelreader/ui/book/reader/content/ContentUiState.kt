@@ -13,4 +13,6 @@ interface ContentUiState {
     val loadNextChapter: () -> Unit
     val loadPrevChapter: () -> Unit
     val changeChapter: (String) -> Unit
+    val retry: () -> Unit
+    val isPositioning: Boolean
 }

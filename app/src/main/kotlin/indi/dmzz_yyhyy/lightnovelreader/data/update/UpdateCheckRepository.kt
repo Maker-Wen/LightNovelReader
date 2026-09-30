@@ -50,7 +50,13 @@ class UpdateCheckRepository @Inject constructor(
         private set
     private val mutableAvailable: MutableStateFlow<Boolean> = MutableStateFlow(false)
     val availableFlow: Flow<Boolean> = mutableAvailable
-    private val _updatePhase = MutableStateFlow("未检查")
+    private val _updatePhase = MutableStateFlow(
+        if (BuildConfig.INDEPENDENT_BUILD) {
+            context.getString(R.string.settings_manual_apk_updates_desc)
+        } else {
+            "未检查"
+        }
+    )
     val updatePhase: Flow<String> = _updatePhase
     private val _isDownloading = MutableStateFlow(false)
     val isDownloading: StateFlow<Boolean> = _isDownloading.asStateFlow()
@@ -66,11 +72,13 @@ class UpdateCheckRepository @Inject constructor(
     }
 
     init {
-        coroutineScope.launch {
-            if (userDataRepository.booleanUserData(UserDataPath.Settings.App.AutoCheckUpdate.path)
-                    .getOrDefault(true)
-            )
-                check()
+        if (!BuildConfig.INDEPENDENT_BUILD) {
+            coroutineScope.launch {
+                if (userDataRepository.booleanUserData(UserDataPath.Settings.App.AutoCheckUpdate.path)
+                        .getOrDefault(true)
+                )
+                    check()
+            }
         }
     }
 
@@ -81,6 +89,7 @@ class UpdateCheckRepository @Inject constructor(
     }
 
     fun check() {
+        if (BuildConfig.INDEPENDENT_BUILD) return
         if (checkJob != null && checkJob!!.isActive) return
         checkJob = coroutineScope.launch {
             val updateChannelKey =
@@ -119,6 +128,7 @@ class UpdateCheckRepository @Inject constructor(
     }
 
     fun downloadUpdate() {
+        if (BuildConfig.INDEPENDENT_BUILD) return
         val release = release
         if (release == null) {
             Log.e("UpdateChecker", "Didn't find the release because release is null!")

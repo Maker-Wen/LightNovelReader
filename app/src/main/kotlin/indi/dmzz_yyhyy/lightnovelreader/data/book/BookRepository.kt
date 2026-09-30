@@ -18,6 +18,7 @@ import indi.dmzz_yyhyy.lightnovelreader.data.local.LocalBookDataSource
 import indi.dmzz_yyhyy.lightnovelreader.data.text.TextProcessingRepository
 import indi.dmzz_yyhyy.lightnovelreader.data.web.WebBookDataSourceProvider
 import indi.dmzz_yyhyy.lightnovelreader.data.work.CacheBookWork
+import indi.dmzz_yyhyy.lightnovelreader.ui.book.reader.ReaderBenchmarkProbe
 import io.nightfish.lightnovelreader.api.book.BookInformation
 import io.nightfish.lightnovelreader.api.book.BookRepositoryApi
 import io.nightfish.lightnovelreader.api.book.BookVolumes
@@ -50,7 +51,8 @@ class BookRepository @Inject constructor(
         id: String,
         priority: WebDataSourcePriority
     ): Flow<Result<BookInformation, WebRequestError>> = flow {
-        localBookDataSource.getBookInformation(id)?.also {
+        val cached = localBookDataSource.getBookInformation(id)
+        cached?.also {
             emit(Ok(it))
             if (BuildConfig.BENCHMARK) return@flow
         }
@@ -72,7 +74,7 @@ class BookRepository @Inject constructor(
                 it.throwable?.printStackTrace()
             }
             .also {
-                emit(it)
+                if (cached == null || it.isOk) emit(it)
             }
     }.map { result ->
         result.map {
@@ -84,7 +86,8 @@ class BookRepository @Inject constructor(
         id: String,
         priority: WebDataSourcePriority
     ): Flow<Result<BookVolumes, WebRequestError>> = flow {
-        localBookDataSource.getBookVolumes(id)?.also {
+        val cached = localBookDataSource.getBookVolumes(id)
+        cached?.also {
             emit(Ok(it))
             if (BuildConfig.BENCHMARK) return@flow
         }
@@ -96,7 +99,8 @@ class BookRepository @Inject constructor(
                 it.throwable?.printStackTrace()
             }
             .also {
-                emit(it)
+                // The local source also returns an empty directory when nothing is cached.
+                if (cached?.volumes.isNullOrEmpty() || it.isOk) emit(it)
             }
     }.map { result ->
         result.map {
@@ -109,6 +113,7 @@ class BookRepository @Inject constructor(
         bookId: String,
         priority: WebDataSourcePriority
     ): Flow<Result<ChapterContent, WebRequestError>> = flow {
+        if (BuildConfig.BENCHMARK) ReaderBenchmarkProbe.beforeChapterLoad?.invoke(bookId, chapterId)
         localBookDataSource.getChapterContent(chapterId)?.also {
             emit(Ok(it))
             if (BuildConfig.BENCHMARK) return@flow
@@ -125,7 +130,12 @@ class BookRepository @Inject constructor(
             }
     }.map { result ->
         result.map {
-            textProcessingRepository.processChapterContent(bookId) { it }
+            if (BuildConfig.BENCHMARK) ReaderBenchmarkProbe.beginChapterFlow(chapterId, priority.name)
+            try {
+                textProcessingRepository.processChapterContent(bookId) { it }
+            } finally {
+                if (BuildConfig.BENCHMARK) ReaderBenchmarkProbe.endSection()
+            }
         }
     }
 
@@ -142,6 +152,11 @@ class BookRepository @Inject constructor(
                 it.throwable?.printStackTrace()
             }
     }
+
+    suspend fun getCachedChapterContent(chapterId: String, bookId: String): ChapterContent? =
+        localBookDataSource.getChapterContent(chapterId)?.let {
+            textProcessingRepository.processChapterContent(bookId) { it }
+        }
 
     override suspend fun getUserReadingData(bookId: String): UserReadingData =
         localBookDataSource.getUserReadingData(bookId)

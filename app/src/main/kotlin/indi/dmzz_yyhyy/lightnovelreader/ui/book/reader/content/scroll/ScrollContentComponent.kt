@@ -22,19 +22,20 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
@@ -46,12 +47,15 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalResources
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
@@ -60,10 +64,19 @@ import com.github.michaelbull.result.get
 import com.github.michaelbull.result.map
 import com.github.michaelbull.result.onErr
 import com.github.michaelbull.result.onOk
+import indi.dmzz_yyhyy.lightnovelreader.BuildConfig
 import indi.dmzz_yyhyy.lightnovelreader.R
+import indi.dmzz_yyhyy.lightnovelreader.ui.book.reader.ReaderBenchmarkProbe
 import indi.dmzz_yyhyy.lightnovelreader.ui.book.reader.SettingState
 import indi.dmzz_yyhyy.lightnovelreader.ui.book.reader.content.ChapterContentError
 import indi.dmzz_yyhyy.lightnovelreader.ui.book.reader.content.ChapterContentUiState
+import indi.dmzz_yyhyy.lightnovelreader.ui.book.reader.content.ReaderPaginationLayout
+import indi.dmzz_yyhyy.lightnovelreader.ui.book.reader.content.componet.LocalReaderTextLayout
+import io.nightfish.lightnovelreader.api.ui.LocalTextLocaleList
+import io.nightfish.lightnovelreader.api.ui.LocalComponentRender
+import io.nightfish.lightnovelreader.api.ui.LocalReaderStyle
+import io.nightfish.lightnovelreader.api.content.component.data.ParagraphComponentData
+import io.nightfish.lightnovelreader.api.content.component.data.ImageComponentData
 import indi.dmzz_yyhyy.lightnovelreader.ui.components.Loading
 import indi.dmzz_yyhyy.lightnovelreader.ui.home.settings.data.MenuOptions
 import indi.dmzz_yyhyy.lightnovelreader.utils.LocalSnackbarHost
@@ -71,8 +84,6 @@ import indi.dmzz_yyhyy.lightnovelreader.utils.readerTextColor
 import indi.dmzz_yyhyy.lightnovelreader.utils.rememberReaderBackgroundPainter
 import indi.dmzz_yyhyy.lightnovelreader.utils.rememberReaderFontFamily
 import indi.dmzz_yyhyy.lightnovelreader.utils.showSnackbar
-import io.nightfish.lightnovelreader.api.ui.LocalComponentRender
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 @Composable
@@ -85,34 +96,13 @@ fun ScrollContentComponent(
     onClickPrevChapter: () -> Unit,
     onClickNextChapter: () -> Unit
 ) {
-    ScrollContentTextComponent(
-        modifier = modifier,
-        uiState = uiState,
-        settingState = settingState,
-        paddingValues = paddingValues,
-        changeIsImmersive = changeIsImmersive,
-        onClickPrevChapter = onClickPrevChapter,
-        onClickNextChapter = onClickNextChapter
-    )
-}
-
-@Composable
-fun ScrollContentTextComponent(
-    modifier: Modifier,
-    uiState: ScrollContentUiState,
-    settingState: SettingState,
-    paddingValues: PaddingValues,
-    changeIsImmersive: () -> Unit,
-    onClickPrevChapter: () -> Unit,
-    onClickNextChapter: () -> Unit
-) {
     val snackbarHostState = LocalSnackbarHost.current
+    val toggleMenu by rememberUpdatedState(changeIsImmersive)
     val density = LocalDensity.current
     val listState = uiState.lazyListState
-    val scope = rememberCoroutineScope()
+    var lazyColumnSize by remember { mutableStateOf(IntSize.Zero) }
     val loopBackgroundEnabled = settingState.enableBackgroundImage &&
         settingState.backgroundImageDisplayMode == MenuOptions.ReaderBgImageDisplayModeOptions.Loop
-    var lazyColumnSize by remember { mutableStateOf(IntSize(0, 0)) }
     var backgroundViewportHeightPx by remember { mutableIntStateOf(0) }
     var backgroundPhasePx by remember { mutableFloatStateOf(0f) }
     val backgroundScrollConnection = remember(loopBackgroundEnabled) {
@@ -137,6 +127,27 @@ fun ScrollContentTextComponent(
         backgroundPhasePx = 0f
     }
 
+    val direction = LocalLayoutDirection.current
+    val readerStyle = LocalReaderStyle.current
+    val locales = LocalTextLocaleList.current
+    val paginationLayout = ReaderPaginationLayout(
+        width = lazyColumnSize.width,
+        height = lazyColumnSize.height,
+        fontSize = settingState.fontSize,
+        fontLineHeight = settingState.lineHeight,
+        fontWeight = settingState.fontWeigh,
+        fontFamilyUri = settingState.fontUri.toString(),
+        density = density.density,
+        fontScale = density.fontScale,
+        isRtl = direction == LayoutDirection.Rtl,
+        mode = "scroll",
+        styleSignature = "$readerStyle|${MaterialTheme.typography.bodyMedium}",
+        localeTags = (0 until locales.size).joinToString(",") { locales[it].toLanguageTag() }
+    )
+    LaunchedEffect(paginationLayout) {
+        uiState.setPaginationLayout(paginationLayout)
+    }
+
     val reachedTopMsg = stringResource(R.string.reader_reached_top)
     val prevChapterLabel = stringResource(R.string.previous_chapter)
     val reachedBottomMsg = stringResource(R.string.reader_reached_bottom)
@@ -145,30 +156,13 @@ fun ScrollContentTextComponent(
     val reachedStartMsg = stringResource(R.string.reader_reached_start)
     val reachedEndMsg = stringResource(R.string.reader_reached_end)
 
-    LaunchedEffect(listState, uiState.readingChapterId) {
-        if (!uiState.isRestoringProgress) return@LaunchedEffect
-        val chapterId = uiState.readingChapterId ?: return@LaunchedEffect
-        listState.scrollToItem(1)
-        snapshotFlow { lazyColumnSize }.first { lazyColumnSize.height > 0 }
-        val item = snapshotFlow {
-            listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == chapterId }
-        }.first { it != null } ?: return@LaunchedEffect
-        val offset = if (uiState.readingProgress <= 0f) {
-            0
-        } else {
-            ((item.size - lazyColumnSize.height / 2).coerceAtLeast(0) * uiState.readingProgress).toInt()
-        }
-        listState.scrollToItem(1, offset)
-        withFrameNanos { }
-        uiState.finishProgressRestore()
-    }
     LaunchedEffect(listState) {
         var atTop = false
         var atBottom = false
 
         snapshotFlow { listState.isScrollInProgress }
             .collect { scrolling ->
-                if (!scrolling) {
+                if (!scrolling && !uiState.isPositioning) {
                     val layoutInfo = listState.layoutInfo
                     val totalCount = layoutInfo.totalItemsCount
                     val firstIndex = listState.firstVisibleItemIndex
@@ -183,8 +177,7 @@ fun ScrollContentTextComponent(
                     when {
                         isAtTop -> {
                             if (atTop) {
-                                if (uiState.readingChapterContent?.map { it.hasPrevChapter() }
-                                        ?.get() == true)
+                                if (uiState.readingChapterContent?.map { it.hasPrevChapter() }?.get() == true)
                                     launch {
                                         showSnackbar(
                                             coroutineScope = this,
@@ -208,8 +201,7 @@ fun ScrollContentTextComponent(
 
                         isAtBottom -> {
                             if (atBottom) {
-                                if (uiState.readingChapterContent?.map { it.hasNextChapter() }
-                                        ?.get() == true)
+                                if (uiState.readingChapterContent?.map { it.hasNextChapter() }?.get() == true)
                                     launch {
                                         showSnackbar(
                                             coroutineScope = this,
@@ -277,59 +269,63 @@ fun ScrollContentTextComponent(
             )
         }
 
-        AnimatedVisibility(
-            uiState.contentList.getOrNull(1) == null,
-            enter = fadeIn(),
-            exit = fadeOut()
+        Box(
+            modifier.fillMaxSize().padding(paddingValues)
+                .onGloballyPositioned { lazyColumnSize = it.size }
+                // Keep the same gesture owner when loading and chapter content cross-fade.
+                .pointerInput(Unit) {
+                    detectTapGestures(onTap = { toggleMenu() })
+                }
         ) {
-            Loading()
-        }
-        AnimatedVisibility(
-            uiState.contentList.getOrNull(1) != null,
-            enter = fadeIn(),
-            exit = fadeOut()
-        ) {
-            SelectionContainer {
-                LazyColumn(
-                modifier = modifier
-                    .nestedScroll(backgroundScrollConnection)
-                    .padding(paddingValues)
-                    .pointerInput(Unit) {
-                        detectTapGestures(
-                            onTap = {
-                                changeIsImmersive.invoke()
+            AnimatedVisibility(
+                uiState.contentList.getOrNull(1) == null,
+                enter = fadeIn(),
+                exit = fadeOut()
+            ) {
+                Box(Modifier.fillMaxSize()) { Loading() }
+            }
+            AnimatedVisibility(
+                uiState.contentList.getOrNull(1) != null,
+                enter = fadeIn(),
+                exit = fadeOut()
+            ) {
+                SelectionContainer {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize()
+                            .nestedScroll(backgroundScrollConnection),
+                        state = listState,
+                        userScrollEnabled = !uiState.isPositioning,
+                    ) {
+                        itemsIndexed(
+                            items = uiState.contentList,
+                            key = { index, pair -> pair?.first ?: "placeholder-$index" }
+                        ) { index, pair ->
+                            val result = pair?.second ?: return@itemsIndexed
+                            uiState.contentList.getOrNull(index + 1)?.second?.get()?.let {
+                                if (!it.hasPrevChapter()) return@itemsIndexed
                             }
-                        )
-                    }
-                    .onGloballyPositioned {
-                        scope.launch {
-                            withFrameNanos { }
-                            uiState.setLazyColumnSize(it.size)
-                            lazyColumnSize = it.size
+                            uiState.contentList.getOrNull(index - 1)?.second?.get()?.let {
+                                if (!it.hasNextChapter()) return@itemsIndexed
+                            }
+                            result.onOk {
+                                TextContent(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    settingState = settingState,
+                                    content = it,
+                                    uiState = uiState,
+                                    layout = paginationLayout
+                                )
+                            }.onErr {
+                                Box(Modifier.fillMaxWidth().defaultMinSize(
+                                    minHeight = with(density) { lazyColumnSize.height.toDp() }
+                                )) {
+                                    ChapterContentError(it) {
+                                        if (pair.first == uiState.readingChapterId) uiState.retry()
+                                        else uiState.changeChapter(pair.first)
+                                    }
+                                }
+                            }
                         }
-                    },
-                state = listState,
-                ) {
-                    itemsIndexed(
-                    items = uiState.contentList,
-                    key = { index, pair -> pair?.first ?: "placeholder-$index" }
-                    ) { index, pair ->
-                    val result = pair?.second ?: return@itemsIndexed
-                    uiState.contentList.getOrNull(index + 1)?.second?.get()?.let {
-                        if (!it.hasPrevChapter()) return@itemsIndexed
-                    }
-                    uiState.contentList.getOrNull(index - 1)?.second?.get()?.let {
-                        if (!it.hasNextChapter()) return@itemsIndexed
-                    }
-                    result.onOk {
-                        TextContent(
-                            modifier = modifier,
-                            settingState = settingState,
-                            content = it
-                        )
-                    }.onErr {
-                        ChapterContentError(it)
-                    }
                     }
                 }
             }
@@ -344,82 +340,106 @@ private fun positiveModulo(value: Float, modulus: Float): Float =
 private fun TextContent(
     modifier: Modifier,
     settingState: SettingState,
-    content: ChapterContentUiState
+    content: ChapterContentUiState,
+    uiState: ScrollContentUiState,
+    layout: ReaderPaginationLayout
 ) {
-    val componentRender = LocalComponentRender.current
     val density = LocalDensity.current
-    val screenHeight = LocalResources.current.displayMetrics.heightPixels
+    val componentRender = LocalComponentRender.current
+    // Match the integer padding used by ParagraphComponentRender's layout modifier.
+    val paragraphTopPadding = with(density) {
+        LocalReaderStyle.current.spacingBeforeParagraph.toDp().roundToPx().toFloat()
+    }
+    val geometryKey = remember(uiState.bookId, content.id, layout, content.contentKey, content.title) {
+        ScrollGeometryKey(uiState.bookId, content.id, content.contentKey, content.title, layout.key)
+    }
+    val onHeaderSize = remember(uiState, geometryKey) {
+        { size: IntSize -> uiState.setHeaderHeight(geometryKey, size.height) }
+    }
     val textColor = readerTextColor(settingState)
     val fontFamily = rememberReaderFontFamily(settingState.fontUriUserData)
     Column(
-            Modifier.defaultMinSize(
-                minHeight = with(density) {
-                    screenHeight.toDp()
-                }
-            )
-    ) {
-            val titleRegex = Regex("^(第[一二三四五六七八九十]+卷)\\s+(.*)")
-            val matchResult = titleRegex.find(content.title)
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 36.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                if (matchResult != null) {
-                    val (volumeTitle, chapterTitle) = matchResult.destructured
-                    Text(
-                        text = volumeTitle,
-                        textAlign = TextAlign.Center,
-                        fontSize = (settingState.fontSize + 2).sp,
-                        fontWeight = FontWeight.Medium,
-                        fontFamily = fontFamily,
-                        color = textColor,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Text(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 8.dp),
-                        text = chapterTitle,
-                        textAlign = TextAlign.Center,
-                        fontSize = (settingState.fontSize + 6).sp,
-                        lineHeight = (settingState.fontSize + settingState.lineHeight + 6).sp,
-                        fontWeight = FontWeight((settingState.fontWeigh.toInt() + 100)),
-                        fontFamily = fontFamily,
-                        color = textColor
-                    )
-                } else {
-                    Text(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 8.dp),
-                        text = content.title,
-                        textAlign = TextAlign.Center,
-                        fontSize = (settingState.fontSize + 6).sp,
-                        lineHeight = (settingState.fontSize + settingState.lineHeight + 6).sp,
-                        fontWeight = FontWeight((settingState.fontWeigh.toInt() + 100)),
-                        fontFamily = fontFamily,
-                        color = textColor
-                    )
-                }
-                Box(
-                    modifier = Modifier.fillMaxWidth(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    HorizontalDivider(
-                        modifier = Modifier.width(48.dp),
-                        color = textColor
-                    )
-                }
-                Spacer(Modifier.height(16.dp))
+        Modifier.defaultMinSize(
+            minHeight = with(density) {
+                layout.height.toDp()
             }
-            for (data in content.content) {
-                componentRender.Component(
+        )
+    ) {
+        val titleRegex = Regex("^(第[一二三四五六七八九十]+卷)\\s+(.*)")
+        val matchResult = titleRegex.find(content.title)
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .onSizeChanged(onHeaderSize)
+                .padding(vertical = 36.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            if (matchResult != null) {
+                val (volumeTitle, chapterTitle) = matchResult.destructured
+                Text(
+                    text = volumeTitle,
+                    textAlign = TextAlign.Center,
+                    fontSize = (settingState.fontSize + 2).sp,
+                    fontWeight = FontWeight.Medium,
+                    fontFamily = fontFamily,
+                    color = textColor,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Text(
                     modifier = Modifier
-                        .fillMaxWidth(),
-                    componentData = data,
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp),
+                    text = chapterTitle,
+                    textAlign = TextAlign.Center,
+                    fontSize = (settingState.fontSize + 6).sp,
+                    lineHeight = (settingState.fontSize + settingState.lineHeight + 6).sp,
+                    fontWeight = FontWeight((settingState.fontWeigh.toInt() + 100)),
+                    fontFamily = fontFamily,
+                    color = textColor
+                )
+            } else {
+                Text(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp),
+                    text = content.title,
+                    textAlign = TextAlign.Center,
+                    fontSize = (settingState.fontSize + 6).sp,
+                    lineHeight = (settingState.fontSize + settingState.lineHeight + 6).sp,
+                    fontWeight = FontWeight((settingState.fontWeigh.toInt() + 100)),
+                    fontFamily = fontFamily,
+                    color = textColor
                 )
             }
+            Box(
+                modifier = Modifier.fillMaxWidth(),
+                contentAlignment = Alignment.Center
+            ) {
+                HorizontalDivider(
+                    modifier = Modifier.width(48.dp),
+                    color = textColor
+                )
+            }
+            Spacer(Modifier.height(16.dp))
+        }
+        content.content.forEachIndexed { index, component ->
+            val topPadding = if (component is ParagraphComponentData) paragraphTopPadding else 0f
+            val onComponentSize = remember(uiState, geometryKey, index, topPadding) {
+                { size: IntSize ->
+                    uiState.setComponentSize(geometryKey, index, size.height, topPadding)
+                    if (BuildConfig.BENCHMARK && component is ImageComponentData) {
+                        ReaderBenchmarkProbe.onImageSize?.invoke(uiState.bookId, content.id, index, size.height)
+                    }
+                }
+            }
+            val onTextLayout = remember(uiState, geometryKey, index) {
+                { textLayout: TextLayoutResult -> uiState.setTextLayout(geometryKey, index, textLayout) }
+            }
+            Box(Modifier.fillMaxWidth().onSizeChanged(onComponentSize)) {
+                CompositionLocalProvider(LocalReaderTextLayout provides onTextLayout) {
+                    componentRender.Component(modifier, component)
+                }
+            }
+        }
     }
 }

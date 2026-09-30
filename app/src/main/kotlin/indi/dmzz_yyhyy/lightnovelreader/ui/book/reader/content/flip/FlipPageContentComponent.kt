@@ -4,9 +4,12 @@ import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.calculateStartPadding
+import androidx.compose.foundation.layout.calculateEndPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -38,6 +41,8 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.SubcomposeLayout
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.platform.testTag
@@ -45,15 +50,23 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTagsAsResourceId
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
+import com.github.michaelbull.result.get
 import com.github.michaelbull.result.onErr
 import com.github.michaelbull.result.onOk
+import indi.dmzz_yyhyy.lightnovelreader.BuildConfig
 import indi.dmzz_yyhyy.lightnovelreader.ui.book.reader.SettingState
 import indi.dmzz_yyhyy.lightnovelreader.ui.book.reader.content.ChapterContentError
 import indi.dmzz_yyhyy.lightnovelreader.ui.book.reader.content.ChapterContentLoading
 import indi.dmzz_yyhyy.lightnovelreader.ui.book.reader.content.ChapterContentUiState
+import indi.dmzz_yyhyy.lightnovelreader.ui.book.reader.content.ReaderAnchor
+import indi.dmzz_yyhyy.lightnovelreader.ui.book.reader.content.ReaderPaginationLayout
 import indi.dmzz_yyhyy.lightnovelreader.ui.home.settings.data.MenuOptions
 import io.nightfish.lightnovelreader.api.content.component.data.AbstractContentComponentData
 import io.nightfish.lightnovelreader.api.content.component.data.Divisible
+import io.nightfish.lightnovelreader.api.content.component.data.ParagraphComponentData
+import io.nightfish.lightnovelreader.api.ui.LocalTextLocaleList
 import io.nightfish.lightnovelreader.api.ui.LocalComponentRender
 import io.nightfish.lightnovelreader.api.ui.LocalReaderStyle
 import kotlinx.coroutines.Dispatchers
@@ -76,18 +89,59 @@ fun FlipPageContentComponent(
     paddingValues: PaddingValues,
     changeIsImmersive: () -> Unit,
 ) {
-    uiState.readingChapterContent?.onOk {
-        SimpleFlipPageTextComponent(
-            modifier = modifier,
-            paddingValues = paddingValues,
-            uiState = uiState,
-            chapterContent = it,
-            settingState = settingState,
-            changeIsImmersive = changeIsImmersive,
-        )
-    }?.onErr {
-        ChapterContentError(it)
-    } ?: ChapterContentLoading()
+    var size by remember(uiState) { mutableStateOf(IntSize.Zero) }
+    val toggleMenu by rememberUpdatedState(changeIsImmersive)
+    val density = LocalDensity.current
+    val layoutDirection = LocalLayoutDirection.current
+    val readerStyle = LocalReaderStyle.current
+    val baseStyle = MaterialTheme.typography.bodyMedium
+    val localeTags = LocalTextLocaleList.current.joinToString(",") { it.toLanguageTag() }
+    // Match Modifier.padding: each edge is rounded before the pixel insets are added.
+    val width = size.width - with(density) {
+        paddingValues.calculateStartPadding(layoutDirection).roundToPx() +
+            paddingValues.calculateEndPadding(layoutDirection).roundToPx()
+    }
+    val height = size.height - with(density) {
+        paddingValues.calculateTopPadding().roundToPx() +
+            paddingValues.calculateBottomPadding().roundToPx()
+    }
+    val layout = if (width > 0 && height > 0) ReaderPaginationLayout(
+        width = width,
+        height = height,
+        fontSize = settingState.fontSize,
+        fontLineHeight = settingState.lineHeight,
+        fontWeight = settingState.fontWeigh,
+        fontFamilyUri = settingState.fontUri.toString(),
+        density = density.density,
+        fontScale = density.fontScale,
+        isRtl = layoutDirection == LayoutDirection.Rtl,
+        localeTags = localeTags,
+        styleSignature = "$readerStyle|$baseStyle",
+    ) else null
+    LaunchedEffect(uiState, layout) { layout?.let(uiState.updateLayout) }
+    Box(
+        modifier.fillMaxSize().onSizeChanged { size = it }
+            // Survive a loading/content replacement between DOWN and UP.
+            .pointerInput(Unit) {
+                detectTapGestures(onTap = { toggleMenu() })
+            }
+    ) {
+        uiState.readingChapterContent?.onOk {
+            SimpleFlipPageTextComponent(
+                modifier = Modifier,
+                paddingValues = paddingValues,
+                uiState = uiState,
+                chapterContent = it,
+                settingState = settingState,
+                layout = layout,
+                changeIsImmersive = changeIsImmersive,
+            )
+        }?.onErr {
+            ChapterContentError(it, onRetry = uiState.retry)
+        } ?: ChapterContentLoading()
+        if (uiState.isPositioning && uiState.pagerState.pendingChapterDirection == 0 &&
+            uiState.readingChapterContent?.get() != null) ChapterContentLoading()
+    }
 }
 
 @Composable
@@ -96,6 +150,7 @@ private fun SimpleFlipPageTextComponent(
     paddingValues: PaddingValues,
     uiState: FlipPageContentUiState,
     chapterContent: ChapterContentUiState,
+    layout: ReaderPaginationLayout?,
     settingState: SettingState,
     changeIsImmersive: () -> Unit,
 ) {
@@ -108,6 +163,7 @@ private fun SimpleFlipPageTextComponent(
     val pageRequests = remember(uiState.pagerState) { Channel<Int>(capacity = 256) }
     val intervalMs = (settingState.volumeKeyContinuousFlipInterval * 1000).toLong()
     fun enqueuePageRequest(direction: Int) {
+        if (uiState.isPositioning) return
         if (
             settingState.flipAnime != MenuOptions.FlipAnimationOptions.None &&
             (uiState.pagerState.isAnimating || uiState.pagerState.pendingChapterDirection != 0)
@@ -165,10 +221,7 @@ private fun SimpleFlipPageTextComponent(
                             pagerState.pendingChapterDirection == direction
                         ) {
                             Snapshot.withMutableSnapshot {
-                                pagerState.pageOffset = 0f
-                                pagerState.pendingChapterDirection = 0
-                                pagerState.pendingChapterId = null
-                                pagerState.isAnimating = false
+                                pagerState.clearTransition()
                             }
                             volumeJob?.cancel()
                             volumeJob = null
@@ -179,10 +232,7 @@ private fun SimpleFlipPageTextComponent(
         } finally {
             if (!waitingForChapter) {
                 Snapshot.withMutableSnapshot {
-                    pagerState.pageOffset = 0f
-                    pagerState.pendingChapterDirection = 0
-                    pagerState.pendingChapterId = null
-                    pagerState.isAnimating = false
+                    pagerState.clearTransition()
                 }
             }
         }
@@ -214,7 +264,7 @@ private fun SimpleFlipPageTextComponent(
         pageRequests.receiveAsFlow().collect { direction ->
             snapshotFlow {
                 val pagerState = uiState.pagerState
-                !pagerState.isAnimating &&
+                !uiState.isPositioning && !pagerState.isAnimating &&
                     pagerState.pendingChapterDirection == 0 &&
                     !pagerState.restoreInProgress &&
                     pagerState.restoreTargetHash == null &&
@@ -304,14 +354,18 @@ private fun SimpleFlipPageTextComponent(
                     var movement = Offset.Zero
                     var pressed = true
                     var isTextSelectionGesture = false
+                    var isDragGesture = false
                     while (pressed) {
                         val event = awaitPointerEvent(PointerEventPass.Initial)
                         val change = event.changes.firstOrNull { it.id == down.id } ?: break
                         movement += change.position - lastPosition
                         lastPosition = change.position
                         pressed = change.pressed
+                        // This content gesture handles paging/menu itself. Its UP cancels the
+                        // stable parent's tap; if content disappears, that parent handles it.
+                        if (!pressed) change.consume()
                         if (
-                            change.uptimeMillis - down.uptimeMillis >=
+                            !isDragGesture && change.uptimeMillis - down.uptimeMillis >=
                             viewConfiguration.longPressTimeoutMillis
                         ) {
                             isTextSelectionGesture = true
@@ -320,8 +374,10 @@ private fun SimpleFlipPageTextComponent(
                         if (
                             !isTextSelectionGesture &&
                             settingState.flipAnime != MenuOptions.FlipAnimationOptions.None &&
-                            !uiState.pagerState.isAnimating &&
+                            !uiState.isPositioning && !uiState.pagerState.isAnimating &&
                             uiState.pagerState.pendingChapterDirection == 0 &&
+                            (movement.x >= 0f || uiState.pagerState.currentPage + 1 < uiState.pagerState.pageCount ||
+                                uiState.pagerState.endReached) &&
                             abs(movement.x) > abs(movement.y)
                         ) {
                             val pageWidth = uiState.pagerState.viewportWidth
@@ -336,7 +392,10 @@ private fun SimpleFlipPageTextComponent(
                         if (
                             !isTextSelectionGesture &&
                             movement.getDistance() > viewConfiguration.touchSlop
-                        ) change.consume()
+                        ) {
+                            isDragGesture = true
+                            change.consume()
+                        }
                     }
 
                     val horizontal = abs(movement.x) > abs(movement.y)
@@ -379,24 +438,25 @@ private fun SimpleFlipPageTextComponent(
         pagerState = uiState.pagerState,
         contentPadding = paddingValues,
         flipAnimation = settingState.flipAnime,
-        onComponentLocated = uiState.locateComponent,
-        onBeyondStart = {
-            chapterContent.prevChapter
-                ?.takeIf { it.isNotBlank() }
-                ?.let { uiState.changeChapterAtBoundary(it, -1) }
+        isPositioning = uiState.isPositioning && uiState.pagerState.pendingChapterDirection == 0,
+        paginationKey = layout?.key,
+        onPagination = { anchors, hashes, width, height ->
+            layout?.takeIf { it.width == width && it.height == height }?.let { value ->
+                uiState.updatePagination(chapterContent.id, chapterContent.contentKey, value, anchors, hashes)
+            }
         },
-        onBeyondEnd = {
-            chapterContent.nextChapter
-                ?.takeIf { it.isNotBlank() }
-                ?.let { uiState.changeChapterAtBoundary(it, 1) }
+        onResolvedPages = { anchors, hashes, nextAnchor, width, height ->
+            layout?.takeIf { it.width == width && it.height == height }?.let { value ->
+                uiState.updateResolvedPages(chapterContent.id, chapterContent.contentKey, value, anchors, hashes, nextAnchor)
+            }
         },
         measurementWindow = uiState.pagerState.measurementWindow,
         )
         uiState.prevChapterContent?.onOk { adjacent ->
-            PremeasureFlipChapter(adjacent, paddingValues, uiState.pagerState.measurementWindow)
+            PremeasureFlipChapter(adjacent, paddingValues, uiState.pagerState.measurementWindow, layout?.key)
         }
         uiState.nextChapterContent?.onOk { adjacent ->
-            PremeasureFlipChapter(adjacent, paddingValues, uiState.pagerState.measurementWindow)
+            PremeasureFlipChapter(adjacent, paddingValues, uiState.pagerState.measurementWindow, layout?.key)
         }
     }
 }
@@ -406,6 +466,7 @@ private fun PremeasureFlipChapter(
     chapter: ChapterContentUiState,
     contentPadding: PaddingValues,
     measurementWindow: ChapterMeasurementWindow,
+    paginationKey: String?,
 ) {
     val premeasureState = remember(chapter.id) { FlipPagerState() }
     FlipPageFragment(
@@ -420,11 +481,9 @@ private fun PremeasureFlipChapter(
         pagerState = premeasureState,
         contentPadding = contentPadding,
         flipAnimation = MenuOptions.FlipAnimationOptions.None,
-        onComponentLocated = { _, _ -> },
-        onBeyondStart = {},
-        onBeyondEnd = {},
         measurementWindow = measurementWindow,
-        exposeCurrentPageForTesting = false,
+        selectable = false,
+        paginationKey = paginationKey,
     )
 }
 
@@ -452,11 +511,12 @@ private fun FlipPageFragment(
     pagerState: FlipPagerState,
     contentPadding: PaddingValues,
     flipAnimation: String,
-    onComponentLocated: (Int, Int) -> Unit,
-    onBeyondStart: () -> Unit,
-    onBeyondEnd: () -> Unit,
     measurementWindow: ChapterMeasurementWindow,
-    exposeCurrentPageForTesting: Boolean = true,
+    selectable: Boolean = true,
+    isPositioning: Boolean = false,
+    paginationKey: String? = null,
+    onPagination: (List<ReaderAnchor>, List<Int>, Int, Int) -> Unit = { _, _, _, _ -> },
+    onResolvedPages: (List<ReaderAnchor>, List<Int>, ReaderAnchor, Int, Int) -> Unit = { _, _, _, _, _ -> },
 ) {
     val context = LocalContext.current
     val readerStyle = LocalReaderStyle.current
@@ -465,26 +525,28 @@ private fun FlipPageFragment(
     val contentSignature = remember(components) {
         components.fold(1) { hash, component -> 31 * hash + component.hashCode() }
     }
-    val styleSignature = 31 * readerStyle.hashCode() + baseStyle.hashCode()
+    val styleSignature = 31 * (31 * readerStyle.hashCode() + baseStyle.hashCode()) + paginationKey.hashCode()
     val cachedPagination = remember(chapterId, contentSignature, styleSignature) {
         measurementWindow.find(chapterId, contentSignature, styleSignature)
     }
-    val measurements = remember(components, readerStyle, baseStyle) {
+    val measurements = remember(chapterId, components, readerStyle, baseStyle, paginationKey) {
         Channel<PageMeasurement>(Channel.BUFFERED)
     }
     val initialComponents = remember(components) {
-        components.map { AnchoredComponent(it.hashCode(), it.hashCode(), it) }
+        components.mapIndexed { index, component ->
+            AnchoredComponent(component.hashCode(), component.hashCode(), component, ReaderAnchor(index))
+        }
     }
-    var pages by remember(components, readerStyle, baseStyle) {
+    var pages by remember(chapterId, components, readerStyle, baseStyle, paginationKey) {
         mutableStateOf(
             cachedPagination?.pages ?: if (initialComponents.isEmpty()) emptyList()
             else listOf(FlipPage(seed = initialComponents))
         )
     }
-    var paginationSize by remember(components, readerStyle, baseStyle) {
+    var paginationSize by remember(chapterId, components, readerStyle, baseStyle, paginationKey) {
         mutableStateOf(cachedPagination?.let { it.width to it.height })
     }
-    LaunchedEffect(measurements, components, readerStyle, baseStyle) {
+    LaunchedEffect(chapterId, measurements, components, readerStyle, baseStyle, paginationKey) {
         measurements.receiveAsFlow().collect { measurement ->
             val page = pages.getOrNull(measurement.pageIndex) ?: return@collect
             val newSize = measurement.width to measurement.height
@@ -538,8 +600,18 @@ private fun FlipPageFragment(
                 } else null
 
                 if (!splitComponents.isNullOrEmpty() && splitComponents.size > 1) {
-                    val fragments = splitComponents.map {
-                        AnchoredComponent(overflow.componentHash, it.hashCode(), it)
+                    var offset = overflow.anchor.characterOffset
+                    val fragments = splitComponents.mapIndexed { index, fragment ->
+                        val anchor = if (fragment is ParagraphComponentData) {
+                            overflow.anchor.copy(characterOffset = offset).also {
+                                offset += fragment.paragraph.textNodes.sumOf { it.text.length }
+                            }
+                        } else {
+                            // ponytail: plugin splits have no source offsets; use their relative fragment position.
+                            overflow.anchor.copy(fraction = overflow.anchor.fraction +
+                                (1f - overflow.anchor.fraction) * index / splitComponents.size)
+                        }
+                        AnchoredComponent(overflow.componentHash, fragment.hashCode(), fragment, anchor)
                     }
                     PageResolution(
                         prefix + fragments.first(),
@@ -574,7 +646,8 @@ private fun FlipPageFragment(
                 if (resolution.nextSeed.isNotEmpty()) add(FlipPage(resolution.nextSeed))
             }
             pages = newPages
-            pagerState.updatePageCount(newPages.size)
+            // The unresolved seed is measured offscreen, but must not be a navigation destination.
+            pagerState.updatePageCount(newPages.count { it.resolved })
             pagerState.endReached = resolution.nextSeed.isEmpty()
             measurementWindow.put(
                 PaginationCacheKey(
@@ -590,7 +663,7 @@ private fun FlipPageFragment(
     }
 
     LaunchedEffect(chapterId, cachedPagination) {
-        pagerState.updatePageCount(pages.size)
+        pagerState.updatePageCount(pages.count { it.resolved })
         pagerState.endReached = cachedPagination?.endReached ?: initialComponents.isEmpty()
     }
 
@@ -602,7 +675,7 @@ private fun FlipPageFragment(
         paginationComplete,
         pagerState.restoreInProgress,
     ) {
-        pagerState.updatePageCount(pages.size)
+        pagerState.updatePageCount(pages.count { it.resolved })
         pagerState.endReached = paginationComplete
     }
 
@@ -635,21 +708,18 @@ private fun FlipPageFragment(
         paginationComplete,
     ) {
         val targetHash = pagerState.restoreTargetHash ?: return@LaunchedEffect
-        val targetPage = pagerState.restoreTargetFragmentHash
-            ?.let(fragmentPageIndex::get)
-            ?: componentPageIndex[targetHash]
+        val fragmentPage = pagerState.restoreTargetFragmentHash?.let(fragmentPageIndex::get)
+        if (pagerState.restoreTargetFragmentHash != null && fragmentPage == null && !paginationComplete) return@LaunchedEffect
+        val targetPage = fragmentPage ?: componentPageIndex[targetHash]
         if (targetPage == null && !paginationComplete) return@LaunchedEffect
         Snapshot.withMutableSnapshot {
-            pagerState.updatePageCount(pages.size)
+            pagerState.updatePageCount(pages.count { it.resolved })
             pagerState.endReached = paginationComplete
             targetPage?.let(pagerState::moveTo)
             pagerState.restoreTargetHash = null
             pagerState.restoreTargetFragmentHash = null
             pagerState.restoreInProgress = false
-            pagerState.pageOffset = 0f
-            pagerState.pendingChapterDirection = 0
-            pagerState.pendingChapterId = null
-            pagerState.isAnimating = false
+            pagerState.clearTransition()
         }
     }
 
@@ -668,10 +738,7 @@ private fun FlipPageFragment(
             !pagerState.restoreToEnd
         ) {
             Snapshot.withMutableSnapshot {
-                pagerState.pageOffset = 0f
-                pagerState.pendingChapterDirection = 0
-                pagerState.pendingChapterId = null
-                pagerState.isAnimating = false
+                pagerState.clearTransition()
             }
         }
     }
@@ -684,38 +751,52 @@ private fun FlipPageFragment(
             pagerState.endReached = paginationComplete
             pagerState.moveTo(pages.lastIndex.coerceAtLeast(0))
             pagerState.restoreToEnd = false
-            pagerState.pageOffset = 0f
-            pagerState.pendingChapterDirection = 0
-            pagerState.pendingChapterId = null
-            pagerState.isAnimating = false
+            pagerState.clearTransition()
         }
     }
 
-    LaunchedEffect(
-        pagerState.currentPage,
-        pages,
-        pagerState.restoreTargetHash,
-        pagerState.restoreTargetFragmentHash,
-        pagerState.restoreToEnd,
-    ) {
-        if (
-            pagerState.restoreInProgress ||
-            pagerState.restoreTargetHash != null ||
-            pagerState.restoreTargetFragmentHash != null ||
-            pagerState.restoreToEnd
-        ) return@LaunchedEffect
-        pages.getOrNull(pagerState.currentPage)
-            ?.displayed
-            ?.let { displayed ->
-                displayed.firstOrNull { component ->
+    val onPaginationUpdated by rememberUpdatedState(onPagination)
+    val onResolvedPagesUpdated by rememberUpdatedState(onResolvedPages)
+    LaunchedEffect(pages, paginationSize, paginationKey, pagerState.restoreInProgress,
+        pagerState.restoreTargetHash, pagerState.restoreTargetFragmentHash, pagerState.restoreToEnd) {
+        if (paginationComplete) return@LaunchedEffect
+        val measuredSize = paginationSize ?: return@LaunchedEffect
+        val resolvedPages = pages.takeWhile { it.resolved }
+        if (resolvedPages.isEmpty()) return@LaunchedEffect
+        val nextAnchor = pages.getOrNull(resolvedPages.size)?.seed?.firstOrNull()?.anchor ?: return@LaunchedEffect
+        onResolvedPagesUpdated(
+            resolvedPages.map { it.displayed.first().anchor },
+            resolvedPages.map { page ->
+                (page.displayed.firstOrNull { component ->
                     val divisible = component.data as? Divisible<*>
                     divisible == null || !divisible.split
-                } ?: displayed.firstOrNull()
-            }
-            ?.let { onComponentLocated(it.componentHash, it.fragmentHash) }
+                } ?: page.displayed.first()).fragmentHash
+            },
+            nextAnchor,
+            measuredSize.first,
+            measuredSize.second,
+        )
+    }
+    LaunchedEffect(pages, paginationSize, paginationKey, pagerState.restoreInProgress,
+        pagerState.restoreTargetHash, pagerState.restoreTargetFragmentHash, pagerState.restoreToEnd) {
+        if (!paginationComplete || pages.isEmpty() || pagerState.restoreInProgress ||
+            pagerState.restoreTargetHash != null || pagerState.restoreTargetFragmentHash != null ||
+            pagerState.restoreToEnd) return@LaunchedEffect
+        val measuredSize = paginationSize ?: return@LaunchedEffect
+        onPaginationUpdated(
+            pages.map { it.displayed.first().anchor },
+            pages.map { page ->
+                (page.displayed.firstOrNull { component ->
+                    val divisible = component.data as? Divisible<*>
+                    divisible == null || !divisible.split
+                } ?: page.displayed.first()).fragmentHash
+            },
+            measuredSize.first,
+            measuredSize.second,
+        )
     }
 
-    val restorePending = pagerState.restoreInProgress ||
+    val restorePending = isPositioning || pagerState.restoreInProgress ||
             pagerState.restoreTargetHash != null ||
             pagerState.restoreTargetFragmentHash != null || pagerState.restoreToEnd
     val currentPageIndex = pagerState.currentPage
@@ -735,6 +816,7 @@ private fun FlipPageFragment(
     } else {
         Modifier
     }
+    val exposeCurrentPageForTesting = BuildConfig.BENCHMARK && selectable
     val pageTestTag = if (exposeCurrentPageForTesting) {
         Modifier.testTag(currentPageTestTag)
     } else {
@@ -765,7 +847,7 @@ private fun FlipPageFragment(
             .then(testTagResourceIds)
             .then(chapterTestTag)
     ) {
-        PagerSelectionContainer(enabled = exposeCurrentPageForTesting) {
+        PagerSelectionContainer(enabled = selectable) {
             Box(modifier = Modifier.fillMaxSize()) {
                 if (flipAnimation == MenuOptions.FlipAnimationOptions.None) {
                     PageLayout(
@@ -811,11 +893,11 @@ private fun FlipPageFragment(
                             offset > 0f -> currentPageIndex - 1
                             else -> -1
                         }
-                        val adjacentPage = pages.getOrNull(adjacentPageIndex) ?: when {
-                            offset < 0f -> nextChapterId?.let {
+                        val adjacentPage = pages.getOrNull(adjacentPageIndex)?.takeIf { it.resolved } ?: when {
+                            offset < 0f && pagerState.endReached -> nextChapterId?.let {
                                 measurementWindow.find(it, styleSignature)?.pages?.firstOrNull()
                             }
-                            offset > 0f -> prevChapterId?.let {
+                            offset > 0f && adjacentPageIndex < 0 -> prevChapterId?.let {
                                 measurementWindow.find(it, styleSignature)?.pages?.lastOrNull()
                             }
                             else -> null
@@ -914,6 +996,7 @@ internal data class AnchoredComponent(
     val componentHash: Int,
     val fragmentHash: Int,
     val data: AbstractContentComponentData,
+    val anchor: ReaderAnchor,
 )
 
 internal data class FlipPage(

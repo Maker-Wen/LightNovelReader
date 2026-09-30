@@ -14,6 +14,7 @@
     <string name="nav_statistics">统计</string>
     <!-- Operations -->
     <string name="cancel">取消</string>
+    <string name="retry">重试</string>
     <string name="apply">应用</string>
     <string name="confirm">确定</string>
     <string name="done">完成</string>
@@ -51,6 +52,9 @@
     <string name="choose_light_bg">选择浅色背景</string>
     <string name="choose_dark_bg">选择深色背景</string>
     <string name="reader_back_press_again">再次点击返回以退出阅读</string>
+    <string name="reader_directory">目录</string>
+    <string name="reader_book_progress">全书阅读位置</string>
+    <string name="reader_return_position">返回跳转前的阅读位置</string>
     <string name="previous_chapter">上一章</string>
     <string name="next_chapter">下一章</string>
     <string name="save_rule">保存规则</string>
@@ -132,6 +136,8 @@
     <string name="theme_settings">主题</string>
     <string name="app_settings">应用</string>
     <string name="app_updates">更新</string>
+    <string name="settings_manual_apk_updates">手动安装更新</string>
+    <string name="settings_manual_apk_updates_desc">此版本请手动安装本项目提供的 APK 更新</string>
     <string name="settings_auto_check_updates">自动检查更新</string>
     <string name="settings_auto_check_updates_desc">应用启动后自动检查更新</string>
     <string name="settings_update_channel">测试更新渠道</string>
