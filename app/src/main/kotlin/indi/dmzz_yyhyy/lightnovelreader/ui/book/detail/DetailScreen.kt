@@ -844,7 +844,7 @@ private fun TagsBlock(
         if (bookInformation.publishingHouse.isNotEmpty()) {
             SuggestionChip(
                 label = { Text(bookInformation.publishingHouse) },
-                onClick = {}
+                onClick = { onClickTag(bookInformation.publishingHouse) }
             )
         }
 

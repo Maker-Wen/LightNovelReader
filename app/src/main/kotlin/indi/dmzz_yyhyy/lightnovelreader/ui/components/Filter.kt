@@ -7,8 +7,11 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -209,6 +212,10 @@ fun FilterChipsDialog(
             FlowRow(
                 modifier = Modifier
                     .align(Alignment.CenterHorizontally)
+                    // Keep the action row reachable when a source exposes a
+                    // long choice list (Linovelib has 61 theme choices).
+                    .heightIn(max = 360.dp)
+                    .verticalScroll(rememberScrollState())
                     .padding(horizontal = 33.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(0.dp),
