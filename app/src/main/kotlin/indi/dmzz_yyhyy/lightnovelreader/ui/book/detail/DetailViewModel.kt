@@ -20,7 +20,6 @@ import indi.dmzz_yyhyy.lightnovelreader.data.book.BookRepository
 import indi.dmzz_yyhyy.lightnovelreader.data.bookshelf.BookshelfRepository
 import indi.dmzz_yyhyy.lightnovelreader.data.download.DownloadProgressRepository
 import indi.dmzz_yyhyy.lightnovelreader.data.download.DownloadType
-import indi.dmzz_yyhyy.lightnovelreader.data.text.TextProcessingRepository
 import indi.dmzz_yyhyy.lightnovelreader.data.work.ExportBookToEPUBWork
 import io.nightfish.lightnovelreader.api.book.RelatedBookKind
 import io.nightfish.lightnovelreader.api.book.RelatedBooksRequest
@@ -33,7 +32,6 @@ import javax.inject.Inject
 @HiltViewModel
 class DetailViewModel @Inject constructor(
     private val bookRepository: BookRepository,
-    private val textProcessingRepository: TextProcessingRepository,
     private val bookshelfRepository: BookshelfRepository,
     private val downloadProgressRepository: DownloadProgressRepository,
     private val workManager: WorkManager
@@ -50,19 +48,19 @@ class DetailViewModel @Inject constructor(
         if (isInitialized) return
         isInitialized = true
         viewModelScope.launch(Dispatchers.IO) {
-            bookRepository.getRawBookInformationFlow(bookId, WebDataSourcePriority.High)
-                .collect { rawResult ->
+            bookRepository.getSourceBookInformationFlow(bookId, WebDataSourcePriority.High)
+                .collect { sourceResult ->
                     var sourceId: String? = null
                     var authorRequest: RelatedBooksRequest? = null
-                    val result = rawResult.map { raw ->
-                        sourceId = raw.sourceId
+                    val result = sourceResult.map { source ->
+                        sourceId = source.sourceId
                         authorRequest = authorRequestForDetail(
-                            sourceId = raw.sourceId,
-                            bookId = raw.information.id,
-                            author = raw.information.author,
-                            supportedKinds = raw.supportedRelatedBookKinds,
+                            sourceId = source.sourceId,
+                            bookId = source.rawBookId,
+                            author = source.rawAuthor,
+                            supportedKinds = source.supportedRelatedBookKinds,
                         )
-                        textProcessingRepository.processBookInformation { raw.information }
+                        source.information
                     }
                     result.onOk {
                         val bookshelfBookMetadata =

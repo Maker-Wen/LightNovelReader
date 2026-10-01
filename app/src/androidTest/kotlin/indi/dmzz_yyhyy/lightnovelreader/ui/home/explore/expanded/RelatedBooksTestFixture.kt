@@ -79,7 +79,7 @@ internal class RelatedBooksTestFixture : AutoCloseable {
     }
 
     fun detail(): DetailViewModel = onMain {
-        keep(DetailViewModel(books, text, bookshelf, DownloadProgressRepository(database.userDataDao(), books), workManager))
+        keep(DetailViewModel(books, bookshelf, DownloadProgressRepository(database.userDataDao(), books), workManager))
     }
 
     private fun <T : ViewModel> keep(model: T): T {

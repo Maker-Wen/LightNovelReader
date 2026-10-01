@@ -6,10 +6,12 @@ import indi.dmzz_yyhyy.lightnovelreader.ui.home.explore.expanded.ControlledRelat
 import indi.dmzz_yyhyy.lightnovelreader.ui.home.explore.expanded.RelatedBooksTestFixture
 import indi.dmzz_yyhyy.lightnovelreader.ui.home.explore.expanded.awaitUi
 import indi.dmzz_yyhyy.lightnovelreader.ui.home.explore.expanded.onMain
+import io.nightfish.lightnovelreader.api.book.BookInformation
 import io.nightfish.lightnovelreader.api.book.RelatedBookKind
 import io.nightfish.lightnovelreader.api.book.RelatedBooksRequest
 import io.nightfish.lightnovelreader.api.identifier.Identifier
 import io.nightfish.lightnovelreader.api.text.TextProcessor
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -37,14 +39,26 @@ class RelatedBooksDetailTest {
         fixture.text.registerProcessors(Identifier("author_fixture", "transform"), object : TextProcessor {
             override val enabled = true
             override fun processText(text: String) = text.replace("礫", "砾")
+            override fun processBookInformation(bookInformation: BookInformation) = bookInformation.copy(
+                id = "display-${bookInformation.id}",
+                author = "[display] ${processText(bookInformation.author)}",
+            )
         })
         val model = fixture.detail()
         onMain { model.init("origin-book") }
         awaitUi("processed detail with raw author request") {
-            model.uiState.bookInformation?.get()?.author == "  川原 砾  " && model.uiState.authorRequest != null
+            model.uiState.bookInformation?.get()?.author == "[display]   川原 砾  " && model.uiState.authorRequest != null
         }
+        assertEquals("display-origin-book", onMain { model.uiState.bookInformation?.get()?.id })
         assertEquals(source.id.toString(), onMain { model.uiState.sourceId })
         assertEquals(RelatedBooksRequest("origin-book", RelatedBookKind.AUTHOR, "川原 礫"), onMain { model.uiState.authorRequest })
+        assertEquals(rawAuthor, fixture.database.bookInformationDao().get("origin-book")?.author)
+
+        // A non-idempotent processor catches accidental double conversion in
+        // either consumer. The public flow emits cached then remote information.
+        val publicResults = fixture.books.getBookInformationFlow("origin-book").toList()
+        assertEquals(listOf("[display]   川原 砾  ", "[display]   川原 砾  "), publicResults.map { it.get()?.author })
+        assertEquals(listOf("display-origin-book", "display-origin-book"), publicResults.map { it.get()?.id })
         assertEquals(rawAuthor, fixture.database.bookInformationDao().get("origin-book")?.author)
     }
 

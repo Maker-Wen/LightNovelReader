@@ -39,9 +39,12 @@ import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/** Display information with the original fields needed for source-owned queries. */
 internal data class SourceBookInformation(
     val sourceId: String?,
     val information: BookInformation,
+    val rawBookId: String,
+    val rawAuthor: String,
     val supportedRelatedBookKinds: Set<RelatedBookKind>,
 )
 
@@ -89,11 +92,11 @@ class BookRepository @Inject constructor(
     override fun getBookInformationFlow(
         id: String,
         priority: WebDataSourcePriority
-    ): Flow<Result<BookInformation, WebRequestError>> = getRawBookInformationFlow(id, priority).map { result ->
-        result.map { textProcessingRepository.processBookInformation { it.information } }
+    ): Flow<Result<BookInformation, WebRequestError>> = getSourceBookInformationFlow(id, priority).map { result ->
+        result.map { it.information }
     }
 
-    internal fun getRawBookInformationFlow(
+    internal fun getSourceBookInformationFlow(
         id: String,
         priority: WebDataSourcePriority = WebDataSourcePriority.Default,
     ): Flow<Result<SourceBookInformation, WebRequestError>> = flow {
@@ -102,9 +105,16 @@ class BookRepository @Inject constructor(
         val sourceId = availableSource?.id?.toString()
         val supportedKinds = (availableSource?.origin as? RelatedBooksDataSource)
             ?.supportedRelatedBookKinds.orEmpty().toSet()
+        fun project(raw: BookInformation) = SourceBookInformation(
+            sourceId = sourceId,
+            information = textProcessingRepository.processBookInformation { raw },
+            rawBookId = raw.id,
+            rawAuthor = raw.author,
+            supportedRelatedBookKinds = supportedKinds,
+        )
         val cached = localBookDataSource.getBookInformation(id)
         cached?.also {
-            emit(Ok(SourceBookInformation(sourceId, it, supportedKinds)))
+            emit(Ok(project(it)))
             if (BuildConfig.BENCHMARK) return@flow
         }
         source.getBookInformation(id, priority)
@@ -126,7 +136,7 @@ class BookRepository @Inject constructor(
             }
             .also {
                 if (cached == null || it.isOk) {
-                    emit(it.map { information -> SourceBookInformation(sourceId, information, supportedKinds) })
+                    emit(it.map(::project))
                 }
             }
     }
