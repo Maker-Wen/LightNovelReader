@@ -10,7 +10,15 @@ import io.nightfish.lightnovelreader.api.error.WebRequestError
 import io.nightfish.lightnovelreader.api.util.Cache
 import io.nightfish.lightnovelreader.api.web.WebBookDataSource
 import io.nightfish.lightnovelreader.api.web.WebDataSourcePriority
+import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 
 private data class Call(
     val operation: String,
@@ -39,6 +47,62 @@ private class RecordingSource(cache: Cache? = Cache()) : ProxyWebBookDataSource 
 
     override suspend fun getChapterContent(chapterId: String, bookId: String, priority: WebDataSourcePriority) =
         respond(Call("chapter", bookId, chapterId, priority)) { ChapterContent(chapterId, bookId, calls.size) }
+}
+
+private class ConcurrentSource(cache: Cache) : ProxyWebBookDataSource {
+    override val origin = WebBookDataSource("source-id", cache)
+    override val proxiedWebBookDataSource get() = this
+    val chapterCalls = AtomicInteger()
+
+    override suspend fun getBookInformation(id: String, priority: WebDataSourcePriority) =
+        Ok(BookInformation(id, 0))
+
+    override suspend fun getBookVolumes(id: String, priority: WebDataSourcePriority) =
+        Ok(BookVolumes(id, 0))
+
+    override suspend fun getChapterContent(chapterId: String, bookId: String, priority: WebDataSourcePriority):
+        Result<ChapterContent, WebRequestError> {
+        chapterCalls.incrementAndGet()
+        return Ok(ChapterContent(chapterId, bookId, 0))
+    }
+}
+
+private suspend fun concurrentEvictionsPreserveResponsesAndCapacity() = withTimeout(5_000) {
+    val cache = Cache(maxCountEachType = 10)
+    val source = ConcurrentSource(cache)
+    val proxy = ProxyCachedWebBookDataSource(source)
+    val priority = WebDataSourcePriority.Default
+    repeat(cache.maxCountEachType) { index ->
+        proxy.getChapterContent((1_000_000 + index).toString(), "3492", priority)
+    }
+    val concurrency = 5 // Wenku8's supported request concurrency.
+    val requestsPerWorker = 2_000
+    val ready = Channel<Unit>(concurrency)
+    val start = CompletableDeferred<Unit>()
+    coroutineScope {
+        val workers = List(concurrency) { worker ->
+            async(Dispatchers.IO) {
+                ready.send(Unit)
+                start.await()
+                repeat(requestsPerWorker) { index ->
+                    val chapter = (1_000_010 + worker * requestsPerWorker + index).toString()
+                    check(proxy.getChapterContent(chapter, "3492", priority) ==
+                        Ok(ChapterContent(chapter, "3492", 0))) {
+                        "Concurrent eviction returned another chapter's response"
+                    }
+                }
+            }
+        }
+        repeat(concurrency) { ready.receive() }
+        start.complete(Unit)
+        workers.awaitAll()
+    }
+    check(source.chapterCalls.get() == cache.maxCountEachType + concurrency * requestsPerWorker)
+    synchronized(cache.cacheMap) {
+        check(cache.cacheMap[ChapterContent::class]?.size == cache.maxCountEachType) {
+            "Concurrent insertions exceeded the per-type cache limit"
+        }
+    }
 }
 
 private suspend fun repeatedRequestsHitCache() {
@@ -91,8 +155,10 @@ private suspend fun expiredEntriesAreRefetched() {
     val first = proxy.getChapterContent("chapter", "book", priority)
     check(proxy.getChapterContent("chapter", "book", priority) == first)
     val staleTimestamp = System.currentTimeMillis() - cache.timeout - 1
-    cache.cacheMap.values.forEach { entries ->
-        entries.replaceAll { _, value -> value.copy(time = staleTimestamp) }
+    synchronized(cache.cacheMap) {
+        cache.cacheMap.values.forEach { entries ->
+            entries.replaceAll { _, value -> value.copy(time = staleTimestamp) }
+        }
     }
     val refreshed = proxy.getChapterContent("chapter", "book", priority)
     check(first != refreshed)
@@ -149,5 +215,7 @@ fun main() = runBlocking {
     println("PASS errors remain retryable for every operation")
     disabledCacheAndPrioritiesPassThrough()
     println("PASS disabled cache forwards every request and every priority")
-    println("Proxy cache checks: 5/5 passed (production proxy and Cache, stub source and DTOs)")
+    concurrentEvictionsPreserveResponsesAndCapacity()
+    println("PASS five concurrent chapter callers preserve responses and cache capacity during eviction")
+    println("Proxy cache checks: 6/6 passed (production proxy and Cache, stub source and DTOs)")
 }

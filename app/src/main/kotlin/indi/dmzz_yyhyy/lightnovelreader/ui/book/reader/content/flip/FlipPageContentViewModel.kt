@@ -129,6 +129,7 @@ class FlipPageContentViewModel(
         requestedPosition = position
         lastReportedPosition = null
         uiState.isPositioning = true
+        uiState.pagerState.invalidateNavigation()
         if (position != null && content != null) {
             // A new explicit target supersedes a still-pending history restoration.
             uiState.pagerState.restoreTargetHash = null
@@ -251,6 +252,7 @@ class FlipPageContentViewModel(
             }
         }
         uiState.isPositioning = true
+        uiState.pagerState.invalidateNavigation()
         layout = newLayout
         onLayout(newLayout)
     }
@@ -468,6 +470,7 @@ class FlipPageContentViewModel(
 
     override fun dispose() {
         generation++
+        uiState.pagerState.invalidateNavigation()
         scope.cancel()
     }
 }

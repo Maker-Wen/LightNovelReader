@@ -336,6 +336,30 @@ private suspend fun seamlessPendingBodyKeepsCollection() {
     }
 }
 
+private suspend fun flipTransitionTimeoutIdentitySurvivesBodyArrival() {
+    ReaderCheck("flip").use { check ->
+        check.add(Ok(chapter()))
+        check.add(Ok(chapter("b")))
+        check.open(); check.positioned()
+        val vm = check.engine as FlipPageContentViewModel
+        val pager = vm.uiState.pagerState
+        val token = pager.beginChapterTransition("b", 1)
+        pager.isAnimating = true
+        val inputGeneration = pager.navigationGeneration
+        vm.changeChapter("b", ChapterPosition.Relative(0f), 2)
+        waitFor("flip boundary body arrives before pagination") { check.current?.id == "b" }
+        check(pager.navigationGeneration != inputGeneration) { "Body reset must retire old page input" }
+        check(pager.pageCount == 0 && pager.pendingChapterId == "b" && pager.pendingChapterDirection == 1)
+        check(pager.ownsChapterTransition(token)) { "Input timeout must still own the preserved unresolved transition" }
+        pager.clearTransition()
+        check(!pager.ownsChapterTransition(token))
+        val replacement = pager.beginChapterTransition("b", 1)
+        check(!pager.ownsChapterTransition(token) && pager.ownsChapterTransition(replacement)) {
+            "An old timeout must not clear a newer transition with the same chapter and direction"
+        }
+    }
+}
+
 private suspend fun ordinaryNavigationReadsAgain(mode: String) {
     ReaderCheck(mode).use { check ->
         val a = check.add(Ok(chapter()))
@@ -681,6 +705,7 @@ fun main() {
             }
             println("Reader history checks passed: production pending/null/fallback resolution and both engines restore the latest pending position")
             seamlessPendingBodyKeepsCollection()
+            flipTransitionTimeoutIdentitySurvivesBodyArrival()
             println("Reader loading checks passed: flip seamless transition retains pending body flow with old chapter still present")
             flipOrdinaryEntryReadsResolvedPrefix()
             flipHistoryRestoresBeforeCompletion()

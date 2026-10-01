@@ -4,6 +4,7 @@ import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.github.michaelbull.result.Result
@@ -26,6 +27,9 @@ interface FlipPageContentUiState : ContentUiState {
 @Stable
 class FlipPagerState {
     internal val measurementWindow = ChapterMeasurementWindow()
+    var navigationGeneration by mutableLongStateOf(0L)
+        private set
+    private var chapterTransitionToken: Any? = null
     var currentPage by mutableIntStateOf(0)
         private set
     var pageCount by mutableIntStateOf(0)
@@ -67,19 +71,37 @@ class FlipPagerState {
     }
 
     internal fun clearTransition() {
+        chapterTransitionToken = null
         pageOffset = 0f
         pendingChapterDirection = 0
         pendingChapterId = null
         isAnimating = false
     }
 
+    internal fun beginChapterTransition(id: String, direction: Int): Any {
+        val token = Any()
+        chapterTransitionToken = token
+        pendingChapterId = id
+        pendingChapterDirection = direction
+        return token
+    }
+
+    internal fun ownsChapterTransition(token: Any): Boolean = chapterTransitionToken === token
+
+    /** Retire queued input and animation callbacks belonging to a superseded position. */
+    internal fun invalidateNavigation() {
+        navigationGeneration++
+    }
+
     internal fun reset(preserveChapterTransition: Boolean = false) {
+        invalidateNavigation()
         val transitionDirection = pendingChapterDirection
         val transitionChapterId = pendingChapterId
         val transitionOffset = pageOffset
         val hasChapterTransition = preserveChapterTransition &&
             transitionDirection != 0 &&
             transitionChapterId != null
+        if (!hasChapterTransition) chapterTransitionToken = null
         requestedPage = 0
         currentPage = 0
         pageCount = 0

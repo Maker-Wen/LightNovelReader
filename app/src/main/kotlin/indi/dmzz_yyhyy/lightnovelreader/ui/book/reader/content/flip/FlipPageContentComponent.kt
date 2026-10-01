@@ -160,7 +160,7 @@ private fun SimpleFlipPageTextComponent(
     val screenWidthPx = windowInfo.containerSize.width.toFloat()
     val activeChapterContent by rememberUpdatedState(chapterContent)
     var volumeJob by remember { mutableStateOf<Job?>(null) }
-    val pageRequests = remember(uiState.pagerState) { Channel<Int>(capacity = 256) }
+    val pageRequests = remember(uiState.pagerState) { Channel<FlipPageRequest>(capacity = 256) }
     val intervalMs = (settingState.volumeKeyContinuousFlipInterval * 1000).toLong()
     fun enqueuePageRequest(direction: Int) {
         if (uiState.isPositioning) return
@@ -171,14 +171,16 @@ private fun SimpleFlipPageTextComponent(
             while (pageRequests.tryReceive().isSuccess) {
             }
         }
-        pageRequests.trySend(direction)
+        pageRequests.trySend(FlipPageRequest(direction, uiState.pagerState.navigationGeneration))
     }
     suspend fun settlePage(
         direction: Int,
         startOffset: Float = uiState.pagerState.pageOffset,
+        navigationGeneration: Long = uiState.pagerState.navigationGeneration,
     ): Boolean {
         val pagerState = uiState.pagerState
-        if (direction == 0 || pagerState.isAnimating || pagerState.pendingChapterDirection != 0) {
+        if (navigationGeneration != pagerState.navigationGeneration || direction == 0 ||
+            pagerState.isAnimating || pagerState.pendingChapterDirection != 0) {
             return false
         }
         var waitingForChapter = false
@@ -195,9 +197,12 @@ private fun SimpleFlipPageTextComponent(
                     initialValue = startOffset,
                     targetValue = -direction * pageWidth,
                     animationSpec = tween(220),
-                ) { value, _ -> pagerState.pageOffset = value }
+                ) { value, _ ->
+                    if (navigationGeneration == pagerState.navigationGeneration) pagerState.pageOffset = value
+                }
             }
 
+            if (navigationGeneration != pagerState.navigationGeneration) return false
             val changed = Snapshot.withMutableSnapshot {
                 if (direction > 0) nextPage(pagerState) else lastPage(pagerState)
             }
@@ -209,14 +214,14 @@ private fun SimpleFlipPageTextComponent(
                     activeChapterContent.prevChapter
                 }?.takeIf { it.isNotBlank() }
                 if (adjacentChapterId != null) {
-                    pagerState.pendingChapterDirection = direction
-                    pagerState.pendingChapterId = adjacentChapterId
+                    val transitionToken = pagerState.beginChapterTransition(adjacentChapterId, direction)
                     uiState.changeChapterAtBoundary(adjacentChapterId, direction)
                     waitingForChapter = true
                     progressed = true
                     scope.launch {
                         delay(CHAPTER_TRANSITION_INPUT_TIMEOUT_MS)
                         if (
+                            pagerState.ownsChapterTransition(transitionToken) &&
                             pagerState.pendingChapterId == adjacentChapterId &&
                             pagerState.pendingChapterDirection == direction
                         ) {
@@ -230,7 +235,7 @@ private fun SimpleFlipPageTextComponent(
                 }
             }
         } finally {
-            if (!waitingForChapter) {
+            if (!waitingForChapter && navigationGeneration == pagerState.navigationGeneration) {
                 Snapshot.withMutableSnapshot {
                     pagerState.clearTransition()
                 }
@@ -240,6 +245,7 @@ private fun SimpleFlipPageTextComponent(
     }
     suspend fun cancelPageDrag() {
         val pagerState = uiState.pagerState
+        val navigationGeneration = pagerState.navigationGeneration
         if (pagerState.isAnimating || pagerState.pendingChapterDirection != 0) return
         try {
             pagerState.isAnimating = true
@@ -247,10 +253,14 @@ private fun SimpleFlipPageTextComponent(
                 initialValue = pagerState.pageOffset,
                 targetValue = 0f,
                 animationSpec = tween(180),
-            ) { value, _ -> pagerState.pageOffset = value }
+            ) { value, _ ->
+                if (navigationGeneration == pagerState.navigationGeneration) pagerState.pageOffset = value
+            }
         } finally {
-            pagerState.pageOffset = 0f
-            pagerState.isAnimating = false
+            if (navigationGeneration == pagerState.navigationGeneration) {
+                pagerState.pageOffset = 0f
+                pagerState.isAnimating = false
+            }
         }
     }
     fun requestNextPage() {
@@ -260,11 +270,14 @@ private fun SimpleFlipPageTextComponent(
         enqueuePageRequest(-1)
     }
 
-    LaunchedEffect(pageRequests) {
-        pageRequests.receiveAsFlow().collect { direction ->
+    LaunchedEffect(pageRequests, uiState.pagerState.navigationGeneration) {
+        pageRequests.receiveAsFlow().collect { request ->
+            val direction = request.direction
+            if (request.navigationGeneration != uiState.pagerState.navigationGeneration) return@collect
             snapshotFlow {
                 val pagerState = uiState.pagerState
-                !uiState.isPositioning && !pagerState.isAnimating &&
+                request.navigationGeneration != pagerState.navigationGeneration ||
+                    (!uiState.isPositioning && !pagerState.isAnimating &&
                     pagerState.pendingChapterDirection == 0 &&
                     !pagerState.restoreInProgress &&
                     pagerState.restoreTargetHash == null &&
@@ -274,9 +287,10 @@ private fun SimpleFlipPageTextComponent(
                         direction < 0 ||
                             pagerState.currentPage + 1 < pagerState.pageCount ||
                             pagerState.endReached
-                    )
+                    ))
             }.first { ready -> ready }
-            val progressed = settlePage(direction, 0f)
+            if (request.navigationGeneration != uiState.pagerState.navigationGeneration) return@collect
+            val progressed = settlePage(direction, 0f, request.navigationGeneration)
             if (!progressed) {
                 volumeJob?.cancel()
                 volumeJob = null
@@ -350,30 +364,40 @@ private fun SimpleFlipPageTextComponent(
                         requireUnconsumed = false,
                         pass = PointerEventPass.Initial,
                     )
+                    val gestureGeneration = uiState.pagerState.navigationGeneration
                     var lastPosition = down.position
                     var movement = Offset.Zero
                     var pressed = true
                     var isTextSelectionGesture = false
                     var isDragGesture = false
+                    var childHandledRelease = false
                     while (pressed) {
                         val event = awaitPointerEvent(PointerEventPass.Initial)
                         val change = event.changes.firstOrNull { it.id == down.id } ?: break
                         movement += change.position - lastPosition
                         lastPosition = change.position
                         pressed = change.pressed
-                        // This content gesture handles paging/menu itself. Its UP cancels the
-                        // stable parent's tap; if content disappears, that parent handles it.
-                        if (!pressed) change.consume()
+                        if (!pressed) {
+                            // Children see UP in Main first (e.g. an image's retry Button).
+                            // Consume afterwards to suppress the stable outer Box's duplicate tap.
+                            val release = awaitPointerEvent(PointerEventPass.Main)
+                                .changes.firstOrNull { it.id == down.id }
+                            childHandledRelease = release?.isConsumed == true
+                            release?.consume()
+                        }
                         if (
                             !isDragGesture && change.uptimeMillis - down.uptimeMillis >=
                             viewConfiguration.longPressTimeoutMillis
                         ) {
                             isTextSelectionGesture = true
-                            uiState.pagerState.pageOffset = 0f
+                            if (gestureGeneration == uiState.pagerState.navigationGeneration) {
+                                uiState.pagerState.pageOffset = 0f
+                            }
                         }
                         if (
                             !isTextSelectionGesture &&
                             settingState.flipAnime != MenuOptions.FlipAnimationOptions.None &&
+                            gestureGeneration == uiState.pagerState.navigationGeneration &&
                             !uiState.isPositioning && !uiState.pagerState.isAnimating &&
                             uiState.pagerState.pendingChapterDirection == 0 &&
                             (movement.x >= 0f || uiState.pagerState.currentPage + 1 < uiState.pagerState.pageCount ||
@@ -399,6 +423,14 @@ private fun SimpleFlipPageTextComponent(
                     }
 
                     val horizontal = abs(movement.x) > abs(movement.y)
+                    if (gestureGeneration != uiState.pagerState.navigationGeneration) {
+                        return@awaitEachGesture
+                    }
+                    if (childHandledRelease) {
+                        val pager = uiState.pagerState
+                        if (!pager.isAnimating && pager.pendingChapterDirection == 0) pager.pageOffset = 0f
+                        return@awaitEachGesture
+                    }
                     if (!horizontal || isTextSelectionGesture) {
                         uiState.pagerState.pageOffset = 0f
                     }
@@ -488,6 +520,8 @@ private fun PremeasureFlipChapter(
 }
 
 private const val CHAPTER_TRANSITION_INPUT_TIMEOUT_MS = 1_500L
+
+private data class FlipPageRequest(val direction: Int, val navigationGeneration: Long)
 
 fun nextPage(pagerState: FlipPagerState): Boolean {
     if (pagerState.currentPage + 1 >= pagerState.pageCount && pagerState.endReached) return false

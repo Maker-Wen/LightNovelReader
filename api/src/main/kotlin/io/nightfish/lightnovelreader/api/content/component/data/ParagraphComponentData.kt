@@ -28,6 +28,8 @@ import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.encodeToJsonElement
 import org.dom4j.DocumentHelper
 import org.dom4j.Element
+import org.dom4j.Namespace
+import org.dom4j.QName
 
 @Serializable
 data class ParagraphComponentData(
@@ -82,9 +84,9 @@ data class ParagraphComponentData(
         // Keep the same block-level shape as the former simple-text component.
         // DOM4J escapes text when it serializes the document, so source text
         // cannot accidentally become markup in the exported EPUB.
-        return DocumentHelper.createElement("div").apply {
+        return DocumentHelper.createElement(QName.get("div", XHTML_NAMESPACE)).apply {
             if (paragraph.textNodes.isEmpty()) {
-                addElement("br")
+                addElement(QName.get("br", XHTML_NAMESPACE))
             }
 
             paragraph.textNodes.forEach { textNode ->
@@ -93,7 +95,7 @@ data class ParagraphComponentData(
                     .split("\n", ignoreCase = false, limit = Int.MAX_VALUE)
                 lines.forEachIndexed { lineIndex, line ->
                     addText(line)
-                    if (lineIndex < lines.lastIndex) addElement("br")
+                    if (lineIndex < lines.lastIndex) addElement(QName.get("br", XHTML_NAMESPACE))
                 }
             }
         }
@@ -179,6 +181,7 @@ data class ParagraphComponentData(
      * @since Api 4
      */
     companion object {
+        private val XHTML_NAMESPACE = Namespace.get("http://www.w3.org/1999/xhtml")
         private val INVALID_XML_CONTROL_CHARACTERS =
             Regex("[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F]")
 

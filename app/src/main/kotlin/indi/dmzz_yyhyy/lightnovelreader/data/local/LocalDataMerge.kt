@@ -2,10 +2,13 @@ package indi.dmzz_yyhyy.lightnovelreader.data.local
 
 import indi.dmzz_yyhyy.lightnovelreader.data.local.cbor.LocalData
 import indi.dmzz_yyhyy.lightnovelreader.data.local.room.entity.BookRecordEntity
+import indi.dmzz_yyhyy.lightnovelreader.data.local.room.entity.ChapterContentEntity
 import indi.dmzz_yyhyy.lightnovelreader.data.local.room.entity.FormattingRuleEntity
 import indi.dmzz_yyhyy.lightnovelreader.data.local.room.entity.UserDataEntity
 import indi.dmzz_yyhyy.lightnovelreader.data.local.room.entity.UserReadingDataEntity
+import indi.dmzz_yyhyy.lightnovelreader.data.local.room.entity.VolumeEntity
 import io.nightfish.lightnovelreader.api.identifier.Identifier
+import java.time.LocalDateTime
 
 /** The legacy built-in Wenku8 ID can also occur in string-valued API 4 backups. */
 fun normalizeLocalDataSourceId(id: Identifier?): Identifier? =
@@ -17,7 +20,8 @@ fun normalizeLocalDataSourceId(id: Identifier?): Identifier? =
 
 /**
  * Merges two snapshots of the same source without adding counters from overlapping backups.
- * The existing snapshot keeps its order and settings; incoming-only rows are appended.
+ * The existing snapshot keeps shelf order, settings and chapter bodies; incoming-only rows survive.
+ * Cached directories also incorporate missing chapters and reconnect their interior navigation.
  * These rules are specific to backup restoration, rather than live reading updates.
  */
 fun mergeLocalData(existing: LocalData, incoming: LocalData): LocalData {
@@ -25,6 +29,38 @@ fun mergeLocalData(existing: LocalData, incoming: LocalData): LocalData {
     require(sourceId == normalizeLocalDataSourceId(incoming.webBookDataSourceId)) {
         "Cannot merge snapshots from different data sources"
     }
+    val existingUpdates = existing.bookInformationEntities.groupBy { it.id }
+        .mapValues { (_, rows) -> rows.maxOf { it.lastUpdated } }
+    val incomingUpdates = incoming.bookInformationEntities.groupBy { it.id }
+        .mapValues { (_, rows) -> rows.maxOf { it.lastUpdated } }
+    // Book metadata is only a preference for directory order, not a timestamp for chapter bodies.
+    // Missing/unknown/equal dates cannot establish that a backup's directory is newer.
+    val newerIncomingBooks = incomingUpdates.filter { (id, updated) ->
+        val previous = existingUpdates[id]
+        previous != null && previous != LocalDateTime.MIN && updated != LocalDateTime.MIN &&
+            updated.isAfter(previous)
+    }.keys
+    val volumes = mergeRows(
+        existing.volumeEntities.map { it.copy(chapterIds = it.chapterIds.distinct()) },
+        incoming.volumeEntities.map { it.copy(chapterIds = it.chapterIds.distinct()) },
+        key = { it.volumeId },
+        merge = { old, new ->
+            // A volume ID conflict must not attach another book's cached chapters to this book.
+            if (old.bookId != new.bookId) old else {
+                val preferIncoming = new.bookId in newerIncomingBooks
+                val preferred = if (preferIncoming) new else old
+                val other = if (preferIncoming) old else new
+                preferred.copy(chapterIds = mergeChapterOrder(preferred.chapterIds, other.chapterIds))
+            }
+        }
+    )
+    val chapterContents = mergeRows(
+        existing.chapterContentEntities,
+        incoming.chapterContentEntities,
+        key = { it.id }
+    )
+    val addedCachedChapterIds = incoming.chapterContentEntities.map { it.id }.toSet() -
+        existing.chapterContentEntities.map { it.id }.toSet()
     return existing.copy(
         webBookDataSourceId = sourceId,
         bookInformationEntities = mergeRows(
@@ -84,10 +120,8 @@ fun mergeLocalData(existing: LocalData, incoming: LocalData): LocalData {
                 )
             }
         ),
-        chapterContentEntities = mergeRows(
-            existing.chapterContentEntities,
-            incoming.chapterContentEntities,
-            key = { it.id }
+        chapterContentEntities = repairMergedChapterLinks(
+            chapterContents, existing.volumeEntities, volumes, addedCachedChapterIds
         ),
         chapterInformationEntities = mergeRows(
             existing.chapterInformationEntities,
@@ -119,12 +153,66 @@ fun mergeLocalData(existing: LocalData, incoming: LocalData): LocalData {
             key = { it.id },
             merge = ::mergeUserReadingData
         ),
-        volumeEntities = mergeRows(
-            existing.volumeEntities,
-            incoming.volumeEntities,
-            key = { it.volumeId }
-        )
+        volumeEntities = volumes
     )
+}
+
+/** Keep the preferred relative order, inserting additions before their next shared chapter. */
+private fun mergeChapterOrder(preferred: List<String>, other: List<String>): List<String> {
+    val preferredIds = preferred.toSet()
+    val beforeChapter = mutableMapOf<String, MutableList<String>>()
+    val pending = mutableListOf<String>()
+    for (id in other.distinct()) {
+        if (id in preferredIds) {
+            if (pending.isNotEmpty()) {
+                beforeChapter.getOrPut(id) { mutableListOf() }.addAll(pending)
+                pending.clear()
+            }
+        } else pending.add(id)
+    }
+    return buildList {
+        for (id in preferred) {
+            beforeChapter[id]?.let(::addAll)
+            add(id)
+        }
+        addAll(pending)
+    }
+}
+
+private fun repairMergedChapterLinks(
+    contents: List<ChapterContentEntity>,
+    previousVolumes: List<VolumeEntity>,
+    volumes: List<VolumeEntity>,
+    addedCachedChapterIds: Set<String>
+): List<ChapterContentEntity> {
+    data class Neighbours(val previous: String?, val next: String?, val volumeChapterIds: Set<String>)
+    val previousById = previousVolumes.associateBy { it.volumeId }
+    val chapterOwners = volumes.flatMap { volume -> volume.chapterIds.map { it to volume.volumeId } }
+        .groupBy({ it.first }, { it.second })
+    val neighbours = mutableMapOf<String, Neighbours>()
+    for (volume in volumes) {
+        val previous = previousById[volume.volumeId] ?: continue
+        if (previous.bookId != volume.bookId) continue
+        if (previous.chapterIds.distinct() == volume.chapterIds &&
+            volume.chapterIds.none { it in addedCachedChapterIds }) continue
+        // A chapter listed by several volumes does not establish an unambiguous adjacency.
+        if (volume.chapterIds.any { chapterOwners.getValue(it).distinct().size != 1 }) continue
+        val chapterIds = volume.chapterIds.toSet()
+        volume.chapterIds.forEachIndexed { index, id ->
+            neighbours[id] = Neighbours(
+                volume.chapterIds.getOrNull(index - 1), volume.chapterIds.getOrNull(index + 1), chapterIds
+            )
+        }
+    }
+    return contents.map { chapter ->
+        val links = neighbours[chapter.id] ?: return@map chapter
+        // Repair interior links on preserved bodies. Boundary and outside-directory links may
+        // lead to uncached chapters or another volume, so retain the final boundary edges.
+        chapter.copy(
+            prevChapter = links.previous ?: chapter.prevChapter.takeUnless { it in links.volumeChapterIds }.orEmpty(),
+            nextChapter = links.next ?: chapter.nextChapter.takeUnless { it in links.volumeChapterIds }.orEmpty()
+        )
+    }
 }
 
 /** Applies the same export choices to active database snapshots and saved source snapshots. */

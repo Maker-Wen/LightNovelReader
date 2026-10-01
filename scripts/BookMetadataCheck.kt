@@ -3,6 +3,7 @@ import androidx.work.WorkManager
 import com.github.michaelbull.result.Err
 import com.github.michaelbull.result.Ok
 import com.github.michaelbull.result.Result
+import com.github.michaelbull.result.get
 import com.github.michaelbull.result.map
 import indi.dmzz_yyhyy.lightnovelreader.BuildConfig
 import indi.dmzz_yyhyy.lightnovelreader.data.book.BookRepository
@@ -11,9 +12,13 @@ import indi.dmzz_yyhyy.lightnovelreader.data.bookshelf.Metadata
 import indi.dmzz_yyhyy.lightnovelreader.data.local.LocalBookDataSource
 import indi.dmzz_yyhyy.lightnovelreader.data.text.TextProcessingRepository
 import indi.dmzz_yyhyy.lightnovelreader.data.web.ControlledSource
-import indi.dmzz_yyhyy.lightnovelreader.data.web.WebBookDataSourceProvider
+import indi.dmzz_yyhyy.lightnovelreader.data.web.ControlledRelatedSource
+import indi.dmzz_yyhyy.lightnovelreader.data.web.ControlledWebProvider
+import indi.dmzz_yyhyy.lightnovelreader.data.web.EmptyWebDataSource
 import io.nightfish.lightnovelreader.api.book.*
 import io.nightfish.lightnovelreader.api.error.WebRequestError
+import io.nightfish.lightnovelreader.api.identifier.Identifier
+import io.nightfish.lightnovelreader.api.web.WebBookDataSource
 import io.nightfish.lightnovelreader.api.web.WebDataSourcePriority
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.Flow
@@ -46,9 +51,10 @@ private class Fixture(val kind: Kind) {
     val events = mutableListOf<String>()
     val local = LocalBookDataSource(events)
     val web = ControlledSource(events)
+    val provider = ControlledWebProvider(web)
     val bookshelf = BookshelfRepository(events)
     val text = TextProcessingRepository(events)
-    val repository = BookRepository(WebBookDataSourceProvider(web), local, bookshelf, text, WorkManager())
+    val repository = BookRepository(provider, local, bookshelf, text, WorkManager())
     val cached: Any = if (kind == Kind.INFORMATION) information("cached") else volumes("cached")
     val fresh: Any = if (kind == Kind.INFORMATION) information("fresh") else volumes("fresh")
     var reply: suspend () -> Result<Any, WebRequestError> = { Err(offline) }
@@ -188,6 +194,103 @@ fun main() = runBlocking {
         BuildConfig.BENCHMARK = true
         check(f.flow().toList() == listOf(Ok(empty)))
         check(f.web.requests.isEmpty())
+    }
+    test("INFORMATION source projection keeps raw identity and author while displaying once") {
+        val f = Fixture(Kind.INFORMATION)
+        val cached = information("cached").copy(author = "  川原 礫  ")
+        val fresh = information("fresh").copy(author = "  鎌池 和馬  ")
+        f.cache(cached)
+        f.reply = { Ok(fresh) }
+        f.text.informationTransform = {
+            it.copy(id = "display:${it.id}", title = "display:${it.title}", author = "display:${it.author}")
+        }
+        val values = f.repository.getSourceBookInformationFlow("3492", WebDataSourcePriority.High)
+            .toList().map { checkNotNull(it.get()) }
+        check(values.map { it.rawBookId } == listOf("3492", "3492"))
+        check(values.map { it.rawAuthor } == listOf(cached.author, fresh.author))
+        check(values.map { it.sourceId } == List(2) { f.web.id.toString() })
+        check(values.all { it.supportedRelatedBookKinds == setOf(RelatedBookKind.AUTHOR) })
+        check(values.map { it.information } == listOf(cached, fresh).map(f.text.informationTransform))
+        check(f.local.saved == listOf(fresh) && f.local.information == fresh)
+        check(f.text.inputs == listOf(cached, fresh))
+        f.checkRequested()
+
+        val publicValues = f.repository.getBookInformationFlow("3492").toList()
+        check(publicValues == List(2) { Ok(f.text.informationTransform(fresh)) }) {
+            "Public flow must unwrap the projection without applying it twice: $publicValues"
+        }
+        check(f.local.saved == List(2) { fresh })
+        check(f.text.inputs == listOf(cached, fresh, fresh, fresh))
+    }
+    test("INFORMATION refresh retains originating source and capability snapshot") {
+        val f = Fixture(Kind.INFORMATION).apply { cache() }
+        val origin = f.web.origin as ControlledRelatedSource
+        val supported = mutableSetOf(RelatedBookKind.AUTHOR)
+        origin.supportedRelatedBookKinds = supported
+        val release = CompletableDeferred<Unit>()
+        f.reply = { release.await(); Ok(f.fresh) }
+        val originalId = f.web.id.toString()
+        val replacement = ControlledSource(f.events, ControlledRelatedSource(
+            Identifier("metadata_check", "replacement"), setOf(RelatedBookKind.TAG)
+        ))
+        val values = coroutineScope {
+            val collector = async(start = CoroutineStart.UNDISPATCHED) {
+                f.repository.getSourceBookInformationFlow("3492", WebDataSourcePriority.High).toList()
+            }
+            f.checkRequested()
+            supported.clear()
+            f.provider.current = replacement
+            check(f.repository.sourceId == replacement.id.toString())
+            check(f.repository.supportedRelatedBookKinds == setOf(RelatedBookKind.TAG))
+            release.complete(Unit)
+            collector.await().map { checkNotNull(it.get()) }
+        }
+        check(values.map { it.sourceId } == List(2) { originalId })
+        check(values.all { it.supportedRelatedBookKinds == setOf(RelatedBookKind.AUTHOR) })
+        check(values.map { it.information } == listOf(processed(f.cached), processed(f.fresh)))
+        check(replacement.requests.isEmpty()) { "An active flow refreshed from a replacement source" }
+    }
+    test("INFORMATION unavailable and empty sources cannot enable related queries") {
+        for (useEmpty in listOf(false, true)) {
+            val f = Fixture(Kind.INFORMATION).apply { cache() }
+            if (useEmpty) f.web.origin = EmptyWebDataSource else f.provider.found = false
+            val values = f.repository.getSourceBookInformationFlow("3492").toList()
+                .map { checkNotNull(it.get()) }
+            check(values.single().sourceId == null)
+            check(values.single().supportedRelatedBookKinds.isEmpty())
+            check(f.repository.sourceId == null && f.repository.supportedRelatedBookKinds.isEmpty())
+            val request = RelatedBooksRequest("3492", RelatedBookKind.AUTHOR, "Author")
+            check(runCatching { f.repository.createRelatedBooksPage(f.web.id.toString(), request) }
+                .exceptionOrNull() is IllegalStateException)
+            check(f.local.saved.isEmpty() && f.text.inputs == listOf(f.cached))
+        }
+    }
+    test("RELATED pages validate current source and forward raw requests to independent sessions") {
+        val f = Fixture(Kind.INFORMATION)
+        val origin = f.web.origin as ControlledRelatedSource
+        val id = f.repository.sourceId!!
+        val request = RelatedBooksRequest("3492", RelatedBookKind.AUTHOR, "  川原 礫  ")
+        check(runCatching { f.repository.createRelatedBooksPage("metadata_check:other", request) }
+            .exceptionOrNull() is IllegalStateException)
+        check(runCatching { f.repository.createRelatedBooksPage(id, request.copy(kind = RelatedBookKind.TAG)) }
+            .exceptionOrNull() is IllegalArgumentException)
+        check(runCatching { f.repository.createRelatedBooksPage(id, request.copy(value = " \n ")) }
+            .exceptionOrNull() is IllegalArgumentException)
+        check(origin.relatedRequests.isEmpty() && f.web.requests.isEmpty())
+        val first = f.repository.createRelatedBooksPage(id, request)
+        val second = f.repository.createRelatedBooksPage(id, request)
+        check(first !== second && first.title == request.value && second.title == request.value)
+        check(origin.relatedRequests == listOf(request, request))
+        check(f.web.requests.isEmpty()) { "Creating an author page must not request metadata" }
+
+        f.web.origin = object : WebBookDataSource by EmptyWebDataSource {
+            override val id = Identifier("metadata_check", "legacy")
+        }
+        check(f.repository.sourceId == "metadata_check:legacy")
+        check(f.repository.supportedRelatedBookKinds.isEmpty())
+        check(runCatching { f.repository.createRelatedBooksPage(f.repository.sourceId!!, request) }
+            .exceptionOrNull() is IllegalStateException)
+        check(origin.relatedRequests == listOf(request, request))
     }
     println("Book metadata checks: $passed passed, ${failures.size} failed")
     check(failures.isEmpty()) { failures.joinToString("\n") }

@@ -31,6 +31,7 @@ class Cache(
 
     /**
      * 按类型分组的缓存数据映射表
+     * 直接读取或修改映射表时，应使用 synchronized(cacheMap) 与缓存操作共享锁。
      *
      * @since Api 2
      */
@@ -48,14 +49,16 @@ class Cache(
      */
     inline fun <reified T> cache(id: Int, t: T) {
         t ?: return
-        val tClass = T::class
-        if (cacheMap.contains(tClass)) {
-            val map = cacheMap[tClass] ?: return
-            if (map.size >= maxCountEachType)
-                map.remove(map.entries.minByOrNull { it.value.time }?.key ?: return)
-            map[id] = CacheData(System.currentTimeMillis(), t)
-        } else {
-            cacheMap[tClass] = mutableMapOf(Pair(id, CacheData(System.currentTimeMillis(), t)))
+        synchronized(cacheMap) {
+            val tClass = T::class
+            if (cacheMap.contains(tClass)) {
+                val map = cacheMap[tClass] ?: return
+                if (map.size >= maxCountEachType)
+                    map.remove(map.entries.minByOrNull { it.value.time }?.key ?: return)
+                map[id] = CacheData(System.currentTimeMillis(), t)
+            } else {
+                cacheMap[tClass] = mutableMapOf(Pair(id, CacheData(System.currentTimeMillis(), t)))
+            }
         }
     }
 
@@ -70,7 +73,7 @@ class Cache(
      *
      * @since Api 2
      */
-    inline fun <reified T> getCache(id: Int): T? {
+    inline fun <reified T> getCache(id: Int): T? = synchronized(cacheMap) {
         val tClass = T::class
         if (!cacheMap.contains(tClass)) return null
         val map = cacheMap[tClass] ?: return null

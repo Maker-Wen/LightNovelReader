@@ -16,8 +16,11 @@ import indi.dmzz_yyhyy.lightnovelreader.data.local.room.LightNovelReaderDatabase
 import indi.dmzz_yyhyy.lightnovelreader.data.local.room.entity.BookInformationEntity
 import indi.dmzz_yyhyy.lightnovelreader.data.local.room.entity.BookRecordEntity
 import indi.dmzz_yyhyy.lightnovelreader.data.local.room.entity.BookshelfEntity
+import indi.dmzz_yyhyy.lightnovelreader.data.local.room.entity.ChapterContentEntity
+import indi.dmzz_yyhyy.lightnovelreader.data.local.room.entity.ChapterInformationEntity
 import indi.dmzz_yyhyy.lightnovelreader.data.local.room.entity.FormattingRuleEntity
 import indi.dmzz_yyhyy.lightnovelreader.data.local.room.entity.UserDataEntity
+import indi.dmzz_yyhyy.lightnovelreader.data.local.room.entity.VolumeEntity
 import indi.dmzz_yyhyy.lightnovelreader.data.storage.StorageUsageRepository
 import indi.dmzz_yyhyy.lightnovelreader.data.userdata.UserDataRepository
 import indi.dmzz_yyhyy.lightnovelreader.data.web.MutableWebDataSourceProvider
@@ -33,6 +36,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.cbor.Cbor
 import kotlinx.serialization.encodeToByteArray
+import kotlinx.serialization.json.JsonObject
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -315,6 +319,36 @@ class LocalDataBackupTest {
         assertEquals(listOf("inactive-book"), exported.localDataList.single {
             it.webBookDataSourceId == otherId
         }.bookInformationEntities.map { it.id })
+    }
+
+    @Test
+    fun inactiveSourceChapterAdditionsRemainReachableAfterSwitchingAndRepeatedImport() = runBlocking {
+        fun cached(bookId: String, chapters: List<String>) = snapshot(otherId, bookId).copy(
+            volumeEntities = listOf(VolumeEntity(bookId, "$bookId-volume", "Volume", chapters, 0)),
+            chapterInformationEntities = chapters.map { ChapterInformationEntity(it, it) },
+            chapterContentEntities = chapters.mapIndexed { index, id ->
+                ChapterContentEntity(id, id, JsonObject(emptyMap()),
+                    chapters.getOrNull(index - 1).orEmpty(), chapters.getOrNull(index + 1).orEmpty())
+            }
+        )
+        val partialBodies = cached("body-book", listOf("b1", "b2")).let { data ->
+            data.copy(chapterContentEntities = listOf(data.chapterContentEntities.first().copy(nextChapter = "")))
+        }
+        importSnapshot(snapshot(currentId, "active"), cached("book", listOf("c1", "c3")), partialBodies)
+        val backup = appData(cached("book", listOf("c1", "c2", "c3")), cached("body-book", listOf("b1", "b2")))
+        manager.importAppLocalData(backup).requireSuccess()
+        manager.importAppLocalData(backup).requireSuccess()
+        manager.switchSource(otherId).requireSuccess()
+        provider.update(NotFoundWebDataSource(otherId))
+
+        val directory = database.bookVolumesDao().getBookVolumes("book")!!
+        assertEquals(listOf("c1", "c2", "c3"), directory.volumes.single().chapters.map { it.id })
+        assertEquals("c2", database.chapterContentDao().get("c1")!!.nextChapter)
+        assertEquals("c1", database.chapterContentDao().get("c2")!!.prevChapter)
+        assertEquals("c3", database.chapterContentDao().get("c2")!!.nextChapter)
+        assertEquals("c2", database.chapterContentDao().get("c3")!!.prevChapter)
+        assertEquals("b2", database.chapterContentDao().get("b1")!!.nextChapter)
+        assertEquals("b1", database.chapterContentDao().get("b2")!!.prevChapter)
     }
 
     @Test

@@ -248,6 +248,131 @@ private fun checkMerges() {
     }
 }
 
+private fun cachedVolume(
+    chapters: List<String>,
+    updated: LocalDateTime? = timestamp,
+    label: String = "local",
+    index: Int = 0,
+    previousBoundary: String = "",
+    nextBoundary: String = ""
+): LocalData = fixture("shared").let { data ->
+    data.copy(
+        bookInformationEntities = updated?.let { date ->
+            data.bookInformationEntities.map { it.copy(lastUpdated = date) }
+        }.orEmpty(),
+        volumeEntities = listOf(VolumeEntity("shared", "shared-volume", label, chapters, index)),
+        chapterInformationEntities = chapters.map { ChapterInformationEntity(it, "$label $it") },
+        chapterContentEntities = chapters.mapIndexed { position, id ->
+            ChapterContentEntity(id, "$label $id", Json.parseToJsonElement("{\"text\":\"$label $id\"}").jsonObject,
+                chapters.getOrNull(position - 1) ?: previousBoundary,
+                chapters.getOrNull(position + 1) ?: nextBoundary)
+        }
+    )
+}
+
+private fun checkCacheTopology() {
+    scenario("same-volume imported chapter survives inactive snapshot restore and reconnects the preserved predecessor") {
+        val local = cachedVolume(listOf("c1"))
+        val incoming = cachedVolume(listOf("c1", "c2"), label = "backup")
+        val merged = mergeLocalData(local, incoming)
+        check(merged.volumeEntities.single().chapterIds == listOf("c1", "c2"))
+        check(merged.chapterContentEntities.map { it.id } == listOf("c1", "c2"))
+        check(merged.chapterInformationEntities.map { it.id } == listOf("c1", "c2"))
+        check(merged.chapterContentEntities.first().let {
+            it.nextChapter == "c2" && it.title == local.chapterContentEntities.single().title &&
+                it.content == local.chapterContentEntities.single().content
+        })
+        check(merged.chapterContentEntities.last().prevChapter == "c1")
+        equalSnapshot(merged, mergeLocalData(merged, incoming))
+        withStore { _, store ->
+            save(store, merged)
+            equalSnapshot(merged, checkNotNull(store.read(source)))
+        }
+    }
+    scenario("middle chapter additions follow shared anchors while retaining local relative order") {
+        val local = cachedVolume(listOf("c1", "c4"))
+        val incoming = cachedVolume(listOf("c1", "c2", "c3", "c4"), label = "backup")
+        val merged = mergeLocalData(local, incoming)
+        check(merged.volumeEntities.single().chapterIds == listOf("c1", "c2", "c3", "c4"))
+        val content = merged.chapterContentEntities.associateBy { it.id }
+        check(content.getValue("c1").nextChapter == "c2")
+        check(content.getValue("c2").let { it.prevChapter == "c1" && it.nextChapter == "c3" })
+        check(content.getValue("c3").let { it.prevChapter == "c2" && it.nextChapter == "c4" })
+        check(content.getValue("c4").prevChapter == "c3")
+        equalSnapshot(merged, mergeLocalData(merged, incoming))
+    }
+    scenario("new cached bodies reconnect stale predecessor links even when the volume directory is unchanged") {
+        val local = cachedVolume(listOf("c1", "c2")).let { data ->
+            data.copy(chapterContentEntities = listOf(data.chapterContentEntities.first().copy(nextChapter = "")))
+        }
+        val incoming = cachedVolume(listOf("c1", "c2"), label = "backup")
+        val merged = mergeLocalData(local, incoming)
+        check(merged.volumeEntities.single() == local.volumeEntities.single())
+        check(merged.chapterContentEntities.first().let { it.nextChapter == "c2" && it.title == "local c1" })
+        check(merged.chapterContentEntities.last().prevChapter == "c1")
+        equalSnapshot(merged, mergeLocalData(merged, incoming))
+    }
+    scenario("only known newer book metadata chooses incoming volume metadata and chapter order") {
+        val local = cachedVolume(listOf("c1", "c2"), label = "local")
+        val incoming = cachedVolume(listOf("c2", "c1", "c3"), timestamp.plusDays(1), "newer", index = 2)
+        val merged = mergeLocalData(local, incoming)
+        check(merged.volumeEntities.single().let {
+            it.chapterIds == listOf("c2", "c1", "c3") && it.volumeTitle == "newer" && it.index == 2
+        })
+        val content = merged.chapterContentEntities.associateBy { it.id }
+        check(content.getValue("c2").let { it.prevChapter.isEmpty() && it.nextChapter == "c1" })
+        check(content.getValue("c1").let { it.prevChapter == "c2" && it.nextChapter == "c3" })
+        check(content.getValue("c1").title == "local c1" && content.getValue("c2").title == "local c2")
+        equalSnapshot(merged, mergeLocalData(merged, incoming))
+        val older = cachedVolume(listOf("c3", "c1"), timestamp, "older")
+        equalSnapshot(merged, mergeLocalData(merged, older))
+    }
+    scenario("equal missing and unknown metadata retain local directory order and volume fields") {
+        for ((localDate, backupDate) in listOf(
+            timestamp to timestamp, null to timestamp, timestamp to null,
+            LocalDateTime.MIN to timestamp, timestamp to LocalDateTime.MIN
+        )) {
+            val local = cachedVolume(listOf("c1", "c3"), localDate, "local", index = 1)
+            val incoming = cachedVolume(listOf("c1", "c2", "c3"), backupDate, "backup", index = 4)
+            val merged = mergeLocalData(local, incoming)
+            check(merged.volumeEntities.single().let {
+                it.chapterIds == listOf("c1", "c2", "c3") && it.volumeTitle == "local" && it.index == 1
+            })
+            equalSnapshot(merged, mergeLocalData(merged, incoming))
+        }
+    }
+    scenario("former outside boundaries become interior links and final boundaries retain source edges") {
+        val local = cachedVolume(listOf("c2"), previousBoundary = "previous-volume", nextBoundary = "next-volume")
+        val incoming = cachedVolume(listOf("c1", "c2", "c3"), label = "backup",
+            previousBoundary = "previous-volume", nextBoundary = "next-volume")
+        val merged = mergeLocalData(local, incoming)
+        val content = merged.chapterContentEntities.associateBy { it.id }
+        check(content.getValue("c1").let { it.prevChapter == "previous-volume" && it.nextChapter == "c2" })
+        check(content.getValue("c2").let { it.prevChapter == "c1" && it.nextChapter == "c3" })
+        check(content.getValue("c3").let { it.prevChapter == "c2" && it.nextChapter == "next-volume" })
+        equalSnapshot(merged, mergeLocalData(merged, incoming))
+    }
+    scenario("volume isolation prevents cross-book merges and ambiguous links or invented cross-volume edges") {
+        val local = cachedVolume(listOf("c1"), nextBoundary = "external")
+        val otherBook = cachedVolume(listOf("other")).let { data ->
+            data.copy(volumeEntities = data.volumeEntities.map { it.copy(bookId = "other-book") })
+        }
+        check(mergeLocalData(local, otherBook).volumeEntities.single() == local.volumeEntities.single())
+        val anotherVolume = cachedVolume(listOf("c2")).let { data ->
+            data.copy(volumeEntities = data.volumeEntities.map { it.copy(volumeId = "another-volume", index = 1) })
+        }
+        check(mergeLocalData(local, anotherVolume).chapterContentEntities.first().nextChapter == "external")
+        val duplicate = cachedVolume(listOf("c1", "c2")).let { data ->
+            data.copy(volumeEntities = data.volumeEntities + data.volumeEntities.single().copy(volumeId = "duplicate-volume"))
+        }
+        check(mergeLocalData(local, duplicate).chapterContentEntities.first().nextChapter == "external")
+        val repeatedIds = cachedVolume(listOf("c1", "c2", "c2"))
+        val merged = mergeLocalData(local, repeatedIds)
+        check(merged.volumeEntities.single().chapterIds == listOf("c1", "c2"))
+        equalSnapshot(merged, mergeLocalData(merged, repeatedIds))
+    }
+}
+
 private fun checkSnapshots() {
     scenario("new snapshots write ZIP and restore real serialized content") {
         withStore { directory, store ->
@@ -447,6 +572,7 @@ private fun checkBackups() {
 
 fun main() {
     checkMerges()
+    checkCacheTopology()
     checkSnapshots()
     checkBackups()
     println("$passed production .lnr merge, compatibility and recovery scenarios passed")
