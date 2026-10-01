@@ -3,7 +3,10 @@ package io.nightfish.lightnovelreader.source.linovelib
 import android.net.Uri
 import io.nightfish.lightnovelreader.api.explore.ExploreBooksRow
 import io.nightfish.lightnovelreader.api.explore.ExploreDisplayBook
+import io.nightfish.lightnovelreader.api.book.RelatedBookKind
+import io.nightfish.lightnovelreader.api.book.RelatedBooksRequest
 import io.nightfish.lightnovelreader.api.web.explore.AbstractDefaultExplorePageProvider
+import io.nightfish.lightnovelreader.api.web.explore.ExploreExpandedPageDataSource
 import io.nightfish.lightnovelreader.api.web.explore.ExploreTapPageDataSource
 import io.nightfish.lightnovelreader.api.web.search.SearchResult
 import kotlinx.coroutines.flow.Flow
@@ -91,6 +94,29 @@ internal class LinovelibExplorePageProvider(
                 parser = parser
             )
         }
+
+    /** Each author click gets its own lazy page and pagination session. */
+    fun createAuthorPage(request: RelatedBooksRequest): ExploreExpandedPageDataSource {
+        require(request.kind == RelatedBookKind.AUTHOR)
+        return LinovelibLinkedExpandedPageDataSource(
+            displayTag = request.value,
+            targetUrl = "",
+            htmlLoader = htmlLoader,
+            parser = parser,
+            targetUrlLoader = {
+                require(request.bookId.isNotBlank() && request.bookId.all(Char::isDigit))
+                require(request.value.isNotBlank())
+                parser.authorTarget(request.bookId) ?: run {
+                    val book = parser.parseBookInformation(
+                        request.bookId,
+                        htmlLoader(LinovelibUrls.book(host, request.bookId))
+                    )
+                    require(book.title.isNotBlank()) { "Book details were not recognized" }
+                    requireNotNull(parser.authorTarget(request.bookId)) { "Author link was not found" }
+                }
+            }
+        )
+    }
 
     private fun expandableRow(row: ParsedExploreRow): ExploreBooksRow {
         val url = row.expandedUrl ?: return row.toExploreBooksRow()

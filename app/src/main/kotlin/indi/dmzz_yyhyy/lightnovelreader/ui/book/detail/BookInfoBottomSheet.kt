@@ -42,6 +42,7 @@ fun BookInfoBottomSheet(
     bookVolumes: BookVolumes,
     sheetState: SheetState,
     onDismissRequest: () -> Unit,
+    onClickAuthor: (() -> Unit)? = null,
 ) {
     val coroutineScope = rememberCoroutineScope()
     val clipboard = LocalClipboard.current
@@ -52,7 +53,8 @@ fun BookInfoBottomSheet(
         content: String,
         titleStyle: TextStyle,
         contentStyle: TextStyle,
-        icon: Painter? = null
+        icon: Painter? = null,
+        onClick: (() -> Unit)? = null,
     ) {
         Row(
             modifier = Modifier
@@ -88,7 +90,7 @@ fun BookInfoBottomSheet(
                     modifier = Modifier
                         .fillMaxWidth()
                         .combinedClickable(
-                            onClick = {},
+                            onClick = { onClick?.invoke() },
                             onLongClick = {
                                 coroutineScope.launch {
                                     val clipData = ClipData.newPlainText("content", content)
@@ -147,8 +149,11 @@ fun BookInfoBottomSheet(
                 title = stringResource(R.string.detail_info_author),
                 content = bookInformation.author,
                 titleStyle = titleStyle,
-                contentStyle = contentStyle,
-                icon = painterResource(R.drawable.person_edit_24px)
+                contentStyle = if (onClickAuthor != null) {
+                    contentStyle.copy(color = MaterialTheme.colorScheme.primary)
+                } else contentStyle,
+                icon = painterResource(R.drawable.person_edit_24px),
+                onClick = onClickAuthor,
             )
 
             InfoItem(

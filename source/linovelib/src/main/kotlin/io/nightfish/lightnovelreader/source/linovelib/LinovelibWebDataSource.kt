@@ -11,6 +11,8 @@ import io.nightfish.lightnovelreader.api.book.BookVolumes
 import io.nightfish.lightnovelreader.api.book.ChapterContent
 import io.nightfish.lightnovelreader.api.book.ChapterInformation
 import io.nightfish.lightnovelreader.api.book.LocalBookDataSourceApi
+import io.nightfish.lightnovelreader.api.book.RelatedBookKind
+import io.nightfish.lightnovelreader.api.book.RelatedBooksRequest
 import io.nightfish.lightnovelreader.api.book.Volume
 import io.nightfish.lightnovelreader.api.book.WordCount
 import io.nightfish.lightnovelreader.api.bookshelf.BookshelfRepositoryApi
@@ -22,9 +24,11 @@ import io.nightfish.lightnovelreader.api.identifier.Identifier
 import io.nightfish.lightnovelreader.api.text.TextProcessingRepositoryApi
 import io.nightfish.lightnovelreader.api.util.Cache
 import io.nightfish.lightnovelreader.api.web.WebBookDataSource
+import io.nightfish.lightnovelreader.api.web.RelatedBooksDataSource
 import io.nightfish.lightnovelreader.api.web.WebBookDataSourceManagerApi
 import io.nightfish.lightnovelreader.api.web.WebDataSource
 import io.nightfish.lightnovelreader.api.web.explore.ExplorePageProvider
+import io.nightfish.lightnovelreader.api.web.explore.ExploreExpandedPageDataSource
 import io.nightfish.lightnovelreader.api.web.search.SearchProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -58,7 +62,7 @@ class LinovelibWebDataSource(
     textProcessingRepository: TextProcessingRepositoryApi,
     bookshelfRepository: BookshelfRepositoryApi,
     webDataSourceManager: WebBookDataSourceManagerApi
-) : WebBookDataSource {
+) : WebBookDataSource, RelatedBooksDataSource {
     private val coverData = LinovelibCoverData(
         localBookDataSource,
         textProcessingRepository,
@@ -96,6 +100,10 @@ class LinovelibWebDataSource(
         LinovelibUrls.HOST
     )
     override val explorePageProvider: ExplorePageProvider = linovelibExplorePageProvider
+    override val supportedRelatedBookKinds: Set<RelatedBookKind> = setOf(RelatedBookKind.AUTHOR)
+
+    override fun createRelatedBooksPage(request: RelatedBooksRequest): ExploreExpandedPageDataSource =
+        linovelibExplorePageProvider.createAuthorPage(request)
     private val imageStore = LinovelibImageStore(
         directory = File(context.filesDir, "linovelib/chapter-images"),
         diagnostics = diagnostics,

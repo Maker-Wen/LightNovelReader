@@ -13,13 +13,17 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.workDataOf
+import com.github.michaelbull.result.map
 import com.github.michaelbull.result.onOk
 import dagger.hilt.android.lifecycle.HiltViewModel
 import indi.dmzz_yyhyy.lightnovelreader.data.book.BookRepository
 import indi.dmzz_yyhyy.lightnovelreader.data.bookshelf.BookshelfRepository
 import indi.dmzz_yyhyy.lightnovelreader.data.download.DownloadProgressRepository
 import indi.dmzz_yyhyy.lightnovelreader.data.download.DownloadType
+import indi.dmzz_yyhyy.lightnovelreader.data.text.TextProcessingRepository
 import indi.dmzz_yyhyy.lightnovelreader.data.work.ExportBookToEPUBWork
+import io.nightfish.lightnovelreader.api.book.RelatedBookKind
+import io.nightfish.lightnovelreader.api.book.RelatedBooksRequest
 import io.nightfish.lightnovelreader.api.web.WebDataSourcePriority
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -29,6 +33,7 @@ import javax.inject.Inject
 @HiltViewModel
 class DetailViewModel @Inject constructor(
     private val bookRepository: BookRepository,
+    private val textProcessingRepository: TextProcessingRepository,
     private val bookshelfRepository: BookshelfRepository,
     private val downloadProgressRepository: DownloadProgressRepository,
     private val workManager: WorkManager
@@ -45,8 +50,20 @@ class DetailViewModel @Inject constructor(
         if (isInitialized) return
         isInitialized = true
         viewModelScope.launch(Dispatchers.IO) {
-            bookRepository.getBookInformationFlow(bookId, WebDataSourcePriority.High)
-                .collect { result ->
+            bookRepository.getRawBookInformationFlow(bookId, WebDataSourcePriority.High)
+                .collect { rawResult ->
+                    var sourceId: String? = null
+                    var authorRequest: RelatedBooksRequest? = null
+                    val result = rawResult.map { raw ->
+                        sourceId = raw.sourceId
+                        authorRequest = authorRequestForDetail(
+                            sourceId = raw.sourceId,
+                            bookId = raw.information.id,
+                            author = raw.information.author,
+                            supportedKinds = raw.supportedRelatedBookKinds,
+                        )
+                        textProcessingRepository.processBookInformation { raw.information }
+                    }
                     result.onOk {
                         val bookshelfBookMetadata =
                             bookshelfRepository.getBookshelfBookMetadata(bookId) ?: return@onOk
@@ -61,6 +78,8 @@ class DetailViewModel @Inject constructor(
                             it.lastUpdated
                         )
                     }
+                    _uiState.sourceId = sourceId
+                    _uiState.authorRequest = authorRequest
                     _uiState.bookInformation = result
                 }
         }
@@ -104,6 +123,12 @@ class DetailViewModel @Inject constructor(
     }
 
     fun onClickTag(tag: String) = bookRepository.progressBookTagClick(tag)
+
+    fun canOpenAuthorRequest(): Boolean =
+        _uiState.sourceId != null &&
+            _uiState.sourceId == bookRepository.sourceId &&
+            _uiState.authorRequest != null &&
+            RelatedBookKind.AUTHOR in bookRepository.supportedRelatedBookKinds
 
 
     fun exportToEpub(uri: Uri, bookId: String, title: String): Flow<WorkInfo?> {

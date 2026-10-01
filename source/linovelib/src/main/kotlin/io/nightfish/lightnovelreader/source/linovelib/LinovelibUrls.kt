@@ -1,5 +1,7 @@
 package io.nightfish.lightnovelreader.source.linovelib
 
+import java.net.URI
+
 object LinovelibUrls {
     const val HOST = "https://www.bilinovel.net"
 
@@ -42,6 +44,27 @@ object LinovelibUrls {
             path.replace(targetUrl) { "/$page${it.groupValues[1]}" }
         } else null
     }
+
+    /** Resolve links supplied by a list page; never invent author pagination URLs. */
+    internal fun resolveListPageUrl(link: String, baseUrl: String, host: String = HOST): String? =
+        runCatching {
+            val expected = URI(host)
+            val base = URI(baseUrl)
+            val relative = URI(link)
+            // URI.resolve drops the last path segment for a query-only link.
+            // Keep the current list path when the page supplies just ?cursor=... .
+            val target = if (!relative.isAbsolute && relative.rawAuthority == null && relative.rawPath.orEmpty().isEmpty()) {
+                URI(base.toString().substringBefore('#').substringBefore('?') +
+                    (relative.rawQuery ?: base.rawQuery)?.let { "?$it" }.orEmpty())
+            } else base.resolve(relative).normalize()
+            if (target.scheme != "https" || target.host != expected.host ||
+                target.port != expected.port || target.userInfo != null
+            ) return@runCatching null
+            if (listOf("/wenku/", "/top/", "/topfull/", "/authorarticle/")
+                    .none { target.path.startsWith(it) }
+            ) return@runCatching null
+            target.toString().substringBefore('#')
+        }.getOrNull()
 
     fun book(bookId: String): String = book(HOST, bookId)
 

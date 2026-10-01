@@ -11,6 +11,7 @@ import com.github.michaelbull.result.getOrElse
 import com.github.michaelbull.result.runCatching
 import indi.dmzz_yyhyy.lightnovelreader.defaultplugin.wenku8.book.BookRequestDispatcher
 import indi.dmzz_yyhyy.lightnovelreader.defaultplugin.wenku8.explore.Wenku8ExplorePageProvider
+import indi.dmzz_yyhyy.lightnovelreader.defaultplugin.wenku8.explore.expanedpage.AuthorBooksPageDataSource
 import indi.dmzz_yyhyy.lightnovelreader.utils.ImageUtils
 import indi.dmzz_yyhyy.lightnovelreader.utils.network.UserAgentGenerator
 import indi.dmzz_yyhyy.lightnovelreader.utils.ofId
@@ -35,6 +36,8 @@ import io.ktor.http.isSuccess
 import io.ktor.http.userAgent
 import io.nightfish.lightnovelreader.api.book.BookInformation
 import io.nightfish.lightnovelreader.api.book.ChapterContent
+import io.nightfish.lightnovelreader.api.book.RelatedBookKind
+import io.nightfish.lightnovelreader.api.book.RelatedBooksRequest
 import io.nightfish.lightnovelreader.api.book.Volume
 import io.nightfish.lightnovelreader.api.book.WordCount
 import io.nightfish.lightnovelreader.api.Route
@@ -42,8 +45,10 @@ import io.nightfish.lightnovelreader.api.content.component.data.ImageComponentDa
 import io.nightfish.lightnovelreader.api.error.WebRequestError
 import io.nightfish.lightnovelreader.api.util.Cache
 import io.nightfish.lightnovelreader.api.web.WebBookDataSource
+import io.nightfish.lightnovelreader.api.web.RelatedBooksDataSource
 import io.nightfish.lightnovelreader.api.web.WebDataSource
 import io.nightfish.lightnovelreader.api.web.explore.ExplorePageProvider
+import io.nightfish.lightnovelreader.api.web.explore.ExploreExpandedPageDataSource
 import io.nightfish.lightnovelreader.api.web.search.SearchProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -80,7 +85,7 @@ private val WENKU8_CHARSET: Charset = Charset.forName("GB18030")
     "Wenku8",
     "LightNovelReader from wenku8.net"
 )
-class Wenku8Api : WebBookDataSource {
+class Wenku8Api : WebBookDataSource, RelatedBooksDataSource {
     private val tagList = listOf(
         "校园", "青春", "恋爱", "治愈", "群像",
         "竞技", "音乐", "美食", "旅行", "欢乐向",
@@ -250,6 +255,15 @@ class Wenku8Api : WebBookDataSource {
     override val searchProvider: SearchProvider = Wenku8SearchProvider(bookRequestDispatcher)
     override val explorePageProvider: ExplorePageProvider = Wenku8ExplorePageProvider(host, this)
 
+    override val supportedRelatedBookKinds: Set<RelatedBookKind> = setOf(RelatedBookKind.AUTHOR)
+
+    override fun createRelatedBooksPage(request: RelatedBooksRequest): ExploreExpandedPageDataSource {
+        require(request.kind in supportedRelatedBookKinds) { "Related books are unsupported" }
+        require(request.value.isNotBlank()) { "Author is blank" }
+        return AuthorBooksPageDataSource(request.value) { author ->
+            bookRequestDispatcher.search("author", author)
+        }
+    }
 
     override fun progressBookTagClick(tag: String) =
         if (tag in tagList) Route.Main.Explore.Expanded(tag) else null

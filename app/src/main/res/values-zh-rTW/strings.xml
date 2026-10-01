@@ -676,4 +676,9 @@
     <string name="settings_paragraph_spacing">段間距</string>
     <string name="settings_text_indent">文字縮排</string>
     <string name="settings_line_height">行高</string>
+    <string name="related_books_load_failed">書單載入失敗</string>
+    <string name="related_books_empty">沒有找到相關書籍</string>
+    <string name="related_books_source_unavailable">此書單所屬資料來源已切換或無法使用</string>
+    <string name="related_books_unsupported">此資料來源不支援該書單查詢</string>
+    <string name="related_books_unavailable">此書單暫時無法使用</string>
 </resources>

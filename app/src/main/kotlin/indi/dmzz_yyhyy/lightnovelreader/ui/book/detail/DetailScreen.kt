@@ -133,6 +133,7 @@ fun DetailScreen(
     onClickContinueReading: () -> Unit,
     cacheBook: (String) -> Unit,
     requestAddBookToBookshelf: (String) -> Unit,
+    onClickAuthor: () -> Unit,
     onClickTag: (String) -> Unit,
     onClickCover: (Uri) -> Unit,
     onClickMarkAsRead: () -> Unit
@@ -281,6 +282,7 @@ fun DetailScreen(
                         lazyListState = lazyListState,
                         cacheBook = cacheBook,
                         requestAddBookToBookshelf = requestAddBookToBookshelf,
+                        onClickAuthor = onClickAuthor,
                         onClickTag = onClickTag,
                         onClickCover = onClickCover,
                         onClickShowInfo = { showInfoBottomSheet = true }
@@ -315,6 +317,12 @@ fun DetailScreen(
                         bookInformation = bookInformation,
                         bookVolumes = bookVolumes,
                         sheetState = infoBottomSheetState,
+                        onClickAuthor = if (uiState.authorRequest != null) {
+                            {
+                                showInfoBottomSheet = false
+                                onClickAuthor()
+                            }
+                        } else null,
                         onDismissRequest = { showInfoBottomSheet = false }
                     )
                 }
@@ -434,6 +442,7 @@ private fun DetailContent(
     onClickChapter: (String) -> Unit,
     cacheBook: (String) -> Unit,
     requestAddBookToBookshelf: (String) -> Unit,
+    onClickAuthor: () -> Unit,
     onClickTag: (String) -> Unit,
     onClickCover: (Uri) -> Unit,
     onClickShowInfo: () -> Unit
@@ -463,7 +472,8 @@ private fun DetailContent(
                         translationY = lazyListState.firstVisibleItemScrollOffset * 0.5f
                     }
                     .fillMaxWidth(),
-                onClickCover = onClickCover
+                onClickCover = onClickCover,
+                onClickAuthor = onClickAuthor.takeIf { uiState.authorRequest != null }
             )
         }
 
@@ -705,7 +715,8 @@ private fun TopBarActions(
 private fun BookCardBlock(
     bookInformation: BookInformation,
     modifier: Modifier,
-    onClickCover: (Uri) -> Unit
+    onClickCover: (Uri) -> Unit,
+    onClickAuthor: (() -> Unit)?
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -781,7 +792,9 @@ private fun BookCardBlock(
                 maxLines = 1,
                 fontWeight = FontWeight.W600,
                 color = colorScheme.primary,
-                style = typography.bodyLarge
+                style = typography.bodyLarge,
+                modifier = if (onClickAuthor != null) Modifier.clickable(onClick = onClickAuthor)
+                else Modifier
             )
             Column {
                 InfoRow(

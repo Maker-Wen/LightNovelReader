@@ -63,12 +63,15 @@ sealed class ParsedContentBlock {
     data class Image(val url: String) : ParsedContentBlock()
 }
 
+internal data class ParsedListNextPage(val url: String?, val invalid: Boolean = false)
+
 class LinovelibHtmlParser(
     private val host: String = LinovelibUrls.HOST
 ) {
     private val parsedBookCache = ConcurrentHashMap<String, ParsedBookInformation>()
     private val exploreBookCache = ConcurrentHashMap<String, ParsedExploreBook>()
     private val relatedTargetCache = ConcurrentHashMap<String, String>()
+    private val authorTargetByBookId = ConcurrentHashMap<String, String>()
 
     fun parseBookInformation(id: String, html: String): ParsedBookInformation {
         val document = Jsoup.parse(html, host)
@@ -95,12 +98,21 @@ class LinovelibHtmlParser(
         val authorElement = document.selectFirst(".authorname a")
         val author = authorElement?.text().orEmpty()
             .ifBlank { meta("og:novel:author") }
-        val authorUrl = authorElement?.absUrl("href").orEmpty()
+        val authorLink = authorElement?.absUrl("href").orEmpty()
             .ifBlank { authorElement?.attr("href").orEmpty() }
             .ifBlank { meta("og:novel:author_link") }
-            .let(::normalizeUrl)
+        val authorUrl = normalizeUrl(authorLink)
         if (author.isNotBlank() && authorUrl.isNotBlank()) {
             relatedTargetCache[authorDisplayTag(author)] = authorUrl
+        }
+        // Keep the real author identity attached to this book. A name alone can
+        // collide with another author's display name or be transformed by the host.
+        val authorTarget = LinovelibUrls.resolveListPageUrl(authorLink, host, host)
+            ?.takeIf { URI(it).path.startsWith("/authorarticle/") }
+        if (author.isNotBlank() && authorTarget != null) {
+            authorTargetByBookId[id] = authorTarget
+        } else {
+            authorTargetByBookId.remove(id)
         }
         relatedTagElements.forEach { element ->
             val tag = element.text().trim()
@@ -279,6 +291,20 @@ class LinovelibHtmlParser(
             ?: 1
     }
 
+    fun nextListPage(html: String, currentUrl: String): String? = parseNextListPage(html, currentUrl).url
+
+    internal fun parseNextListPage(html: String, currentUrl: String): ParsedListNextPage {
+        val document = Jsoup.parse(html, currentUrl)
+        val links = document.select("#pagelink a.next[href], #pagelink a[rel=next][href], a[rel=next][href]") +
+            document.select("#pagelink a[href]").filter { it.text().trim() in setOf("下一页", "下页") }
+        val activeLinks = links
+            .filterNot { it.hasClass("disabled") || it.hasAttr("disabled") || it.parent()?.hasClass("disabled") == true }
+        val target = activeLinks.asSequence()
+            .mapNotNull { LinovelibUrls.resolveListPageUrl(it.attr("href"), currentUrl, host) }
+            .firstOrNull()
+        return ParsedListNextPage(target, invalid = activeLinks.isNotEmpty() && target == null)
+    }
+
     fun bookIdFromKeyword(keyword: String): String? {
         val trimmed = keyword.trim()
         if (trimmed.all(Char::isDigit) && trimmed.isNotEmpty()) return trimmed
@@ -299,6 +325,10 @@ class LinovelibHtmlParser(
     fun cachedExploreBook(id: String): ParsedExploreBook? = exploreBookCache[id]
 
     fun relatedTarget(displayTag: String): String? = relatedTargetCache[displayTag.trim()]
+
+    fun authorTarget(bookId: String): String? = authorTargetByBookId[bookId]
+
+    fun validatedListTarget(url: String): String? = LinovelibUrls.resolveListPageUrl(url, host, host)
 
     private fun parseExploreBook(element: Element): ParsedExploreBook? {
         val id = bookIdFromHref(element.attr("href")) ?: return null

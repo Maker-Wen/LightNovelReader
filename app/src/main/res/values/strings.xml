@@ -709,4 +709,9 @@
     <string name="settings_paragraph_spacing">Paragraph Spacing</string>
     <string name="settings_text_indent">Text Indent</string>
     <string name="settings_line_height">Line Height</string>
+    <string name="related_books_load_failed">Could not load the book list</string>
+    <string name="related_books_empty">No matching books found</string>
+    <string name="related_books_source_unavailable">This list belongs to a different or unavailable book source.</string>
+    <string name="related_books_unsupported">This source does not support the requested book list.</string>
+    <string name="related_books_unavailable">This book list is unavailable.</string>
 </resources>

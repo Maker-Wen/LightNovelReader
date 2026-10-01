@@ -33,7 +33,8 @@ internal class LinovelibLinkedExpandedPageDataSource(
     private val htmlLoader: suspend (String) -> String,
     private val parser: LinovelibHtmlParser,
     override val filters: List<Filter<*>> = emptyList(),
-    private val filteredUrl: (() -> String)? = null
+    private val filteredUrl: (() -> String)? = null,
+    private val targetUrlLoader: (suspend () -> String)? = null
 ) : ExploreExpandedPageDataSource {
     override val title: String = displayTag
 
@@ -49,17 +50,24 @@ internal class LinovelibLinkedExpandedPageDataSource(
         loadMoreRequests = requests
         // A filter change cancels and recollects this flow.  Keep pagination
         // state local to one collection so a new filter starts at page one.
-        val firstPageUrl = filteredUrl?.invoke() ?: targetUrl
         val emittedBookIds = mutableSetOf<String>()
+        val visitedUrls = mutableSetOf<String>()
         var currentPage = 1
-        var lastPage = 1
         try {
+            val firstPageUrl = runCatching {
+                val url = targetUrlLoader?.invoke() ?: filteredUrl?.invoke() ?: targetUrl
+                requireNotNull(parser.validatedListTarget(url)) { "Unsupported list address" }
+            }.onFailure(Throwable::rethrowIfCancellation).getOrElse {
+                emit(SearchResult.Error("书单地址加载失败，请稍后重试"))
+                emit(SearchResult.End())
+                return@flow
+            }
+            var pageUrl = firstPageUrl
+            var lastPage = 1
             while (true) {
-                val pageUrl = LinovelibUrls.listPage(firstPageUrl, currentPage)
-                if (pageUrl == null) {
-                    emit(SearchResult.Error("书单分页地址不受支持，请稍后重试"))
-                    emit(SearchResult.End())
-                    return@flow
+                if (!visitedUrls.add(pageUrl)) {
+                    emit(SearchResult.Error("书单分页地址重复，请稍后重试"))
+                    break
                 }
                 val html = runCatching { htmlLoader(pageUrl) }
                     .onFailure(Throwable::rethrowIfCancellation)
@@ -69,11 +77,7 @@ internal class LinovelibLinkedExpandedPageDataSource(
                         return@flow
                     }
                 if (currentPage == 1) {
-                    lastPage = if (LinovelibUrls.listPage(firstPageUrl, 2) == null) {
-                        1
-                    } else {
-                        parser.parseLastPage(html)
-                    }
+                    lastPage = parser.parseLastPage(html)
                 }
 
                 val parsedBooks = parser.parseListRow(displayTag, html).books
@@ -90,11 +94,33 @@ internal class LinovelibLinkedExpandedPageDataSource(
                 books.forEach { emit(SearchResult.SingleBook(it.id)) }
 
                 if (currentPage == 1 && books.isEmpty()) break
-                if (currentPage >= lastPage) break
+                // The page's actual next link takes precedence over numeric
+                // URL templates, including author lists. Older wenku/top pages
+                // without next links retain their existing page-number fallback.
+                val nextPage = parser.parseNextListPage(html, pageUrl)
+                if (nextPage.invalid) {
+                    emit(SearchResult.Error("书单分页地址不受支持，请稍后重试"))
+                    break
+                }
+                val nextPageUrl = nextPage.url
+                    ?: if (currentPage < lastPage) {
+                        LinovelibUrls.listPage(firstPageUrl, currentPage + 1)
+                    } else null
+                if (nextPageUrl == null) {
+                    if (currentPage < lastPage) {
+                        emit(SearchResult.Error("书单分页地址不受支持，请稍后重试"))
+                    }
+                    break
+                }
+                if (nextPageUrl in visitedUrls) {
+                    emit(SearchResult.Error("书单分页地址重复，请稍后重试"))
+                    break
+                }
                 // Do not issue the next page until the host explicitly asks for
                 // more.  CONFLATED avoids queueing duplicate taps.
                 if (books.isNotEmpty()) requests.receive()
                 currentPage++
+                pageUrl = nextPageUrl
             }
             if (emittedBookIds.isEmpty()) emit(SearchResult.Empty())
             emit(SearchResult.End())

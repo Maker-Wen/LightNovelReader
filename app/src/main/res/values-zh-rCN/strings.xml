@@ -682,4 +682,9 @@
     <string name="settings_paragraph_spacing">Paragraph Spacing</string>
     <string name="settings_text_indent">Text Indent</string>
     <string name="settings_line_height">Line Height</string>
+    <string name="related_books_load_failed">书单加载失败</string>
+    <string name="related_books_empty">没有找到相关书籍</string>
+    <string name="related_books_source_unavailable">此书单所属数据源已切换或不可用</string>
+    <string name="related_books_unsupported">此数据源不支持该书单查询</string>
+    <string name="related_books_unavailable">此书单暂时不可用</string>
 </resources>
