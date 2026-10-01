@@ -42,12 +42,14 @@ class ExportDataWork @AssistedInject constructor(
             settings = exportSetting
         ).andThen { appLocalData ->
             runCatching {
-                applicationContext.contentResolver.openFileDescriptor(fileUri, "w")
-                    ?.use { parcelFileDescriptor ->
-                        FileOutputStream(parcelFileDescriptor.fileDescriptor).use {
-                            it.writeAppLocalData(Cbor.encodeToByteArray(appLocalData))
-                        }
+                val parcelFileDescriptor = applicationContext.contentResolver
+                    .openFileDescriptor(fileUri, "w")
+                    ?: error("Unable to open export URI: $fileUri")
+                parcelFileDescriptor.use { descriptor ->
+                    FileOutputStream(descriptor.fileDescriptor).use {
+                        it.writeAppLocalData(Cbor.encodeToByteArray(appLocalData))
                     }
+                }
             }
         }.onErr {
             Log.e(TAG, "Failed to get AppLocalData")

@@ -166,6 +166,8 @@ dependencies {
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.material3)
     androidTestImplementation(platform(libs.compose.bom))
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.androidx.test.runner)
     implementation(libs.compose.ui)
     implementation(libs.androidx.material.icons.core)
     implementation(libs.compose.ui.graphics)

@@ -6,13 +6,12 @@ import android.util.Log
 import androidx.hilt.work.HiltWorker
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
+import com.github.michaelbull.result.getOrElse
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import indi.dmzz_yyhyy.lightnovelreader.data.local.LocalDataManager
 import indi.dmzz_yyhyy.lightnovelreader.data.local.cbor.AppLocalData
 import indi.dmzz_yyhyy.lightnovelreader.data.local.cbor.LocalData
-import indi.dmzz_yyhyy.lightnovelreader.data.local.room.dao.BookshelfDao
-import indi.dmzz_yyhyy.lightnovelreader.data.web.WebBookDataSourceProvider
 import indi.dmzz_yyhyy.lightnovelreader.utils.writeAppLocalData
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.cbor.Cbor
@@ -23,21 +22,23 @@ import java.io.FileOutputStream
 class SaveBookshelfWork @AssistedInject constructor(
     @Assisted private val appContext: Context,
     @Assisted workerParams: WorkerParameters,
-    private val webBookDataSourceProvider: WebBookDataSourceProvider,
-    private val localDataManager: LocalDataManager,
-    private val bookshelfDao: BookshelfDao
+    private val localDataManager: LocalDataManager
 ) : CoroutineWorker(appContext, workerParams) {
     companion object {
-        const val TAG = "ExportDataWork"
+        const val TAG = "SaveBookshelfWork"
     }
 
     @OptIn(ExperimentalSerializationApi::class)
     override suspend fun doWork(): Result {
         val id = inputData.getInt("bookshelfId", -1)
         val uri = inputData.getString("uri")?.let(Uri::parse) ?: return Result.failure()
-        val bookshelfEntityList =
-            if (id != -1) bookshelfDao.getBookshelf(id)?.let(::listOf) ?: emptyList()
-            else bookshelfDao.getAllBookshelves()
+        val snapshot = localDataManager.exportCurrentLocalData(
+            localBookCache = false, bookshelf = true, readingRecord = false, settings = false
+        ).getOrElse {
+            Log.e(TAG, "Failed to snapshot bookshelves", it)
+            return Result.failure()
+        }
+        val bookshelfEntityList = snapshot.bookshelfEntities.filter { id == -1 || it.id == id }
         if (bookshelfEntityList.isEmpty() && id != -1) {
             Log.e(TAG, "Bookshelf doesn't exit (id=$id)")
             return Result.failure()
@@ -48,9 +49,8 @@ class SaveBookshelfWork @AssistedInject constructor(
                 this.addAll(entity.allBookIds)
             }
         }.distinct()
-            .mapNotNull {
-                bookshelfDao.getBookshelfBookMetadataEntity(it)
-            }.map { entity ->
+            .let { bookIds -> snapshot.bookshelfBookMetadataEntities.filter { it.id in bookIds } }
+            .map { entity ->
                 entity.copy(
                     bookShelfIds = entity.bookShelfIds.filter { bookshelfIds.contains(it) }
                 )
@@ -59,7 +59,7 @@ class SaveBookshelfWork @AssistedInject constructor(
             version = localDataManager.currentAppDataVersion,
             localDataList = listOf(
                 LocalData.empty().copy(
-                    webBookDataSourceId = webBookDataSourceProvider.value.id,
+                    webBookDataSourceId = snapshot.webBookDataSourceId,
                     bookshelfEntities = bookshelfEntityList,
                     bookshelfBookMetadataEntities = bookshelfBookMetadataEntities
                 )
@@ -67,12 +67,14 @@ class SaveBookshelfWork @AssistedInject constructor(
             globalLocalData = LocalData.empty()
         )
         try {
-            applicationContext.contentResolver.openFileDescriptor(uri, "w")
-                ?.use { parcelFileDescriptor ->
-                    FileOutputStream(parcelFileDescriptor.fileDescriptor).use {
-                        it.writeAppLocalData(Cbor.encodeToByteArray(appLocalData))
-                    }
+            val parcelFileDescriptor = applicationContext.contentResolver
+                .openFileDescriptor(uri, "w")
+                ?: error("Unable to open export URI: $uri")
+            parcelFileDescriptor.use { descriptor ->
+                FileOutputStream(descriptor.fileDescriptor).use {
+                    it.writeAppLocalData(Cbor.encodeToByteArray(appLocalData))
                 }
+            }
             return Result.success()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to save file")

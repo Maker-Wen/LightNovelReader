@@ -36,4 +36,7 @@ interface UserDataDao : UserDataDaoApi {
 
     @Query("select * from user_data")
     fun getAllEntities(): List<UserDataEntity>
+
+    @Query("delete from user_data")
+    suspend fun clear()
 }

@@ -1,37 +1,25 @@
 package indi.dmzz_yyhyy.lightnovelreader.data.local
 
 import android.content.Context
-import android.util.Log
+import androidx.room.withTransaction
 import com.github.michaelbull.result.Err
 import com.github.michaelbull.result.Ok
 import com.github.michaelbull.result.Result
-import com.github.michaelbull.result.andThen
-import com.github.michaelbull.result.asErr
-import com.github.michaelbull.result.runCatching
 import dagger.hilt.android.qualifiers.ApplicationContext
 import indi.dmzz_yyhyy.lightnovelreader.data.local.cbor.AppLocalData
 import indi.dmzz_yyhyy.lightnovelreader.data.local.cbor.LocalData
-import indi.dmzz_yyhyy.lightnovelreader.data.local.room.dao.BookInformationDao
-import indi.dmzz_yyhyy.lightnovelreader.data.local.room.dao.BookRecordDao
-import indi.dmzz_yyhyy.lightnovelreader.data.local.room.dao.BookVolumesDao
-import indi.dmzz_yyhyy.lightnovelreader.data.local.room.dao.BookshelfDao
-import indi.dmzz_yyhyy.lightnovelreader.data.local.room.dao.ChapterContentDao
-import indi.dmzz_yyhyy.lightnovelreader.data.local.room.dao.DailyCountDao
-import indi.dmzz_yyhyy.lightnovelreader.data.local.room.dao.FormattingRuleDao
-import indi.dmzz_yyhyy.lightnovelreader.data.local.room.dao.UserDataDao
-import indi.dmzz_yyhyy.lightnovelreader.data.local.room.dao.UserReadingDataDao
+import indi.dmzz_yyhyy.lightnovelreader.data.local.room.LightNovelReaderDatabase
+import indi.dmzz_yyhyy.lightnovelreader.data.local.room.dao.*
+import indi.dmzz_yyhyy.lightnovelreader.data.local.room.entity.UserDataEntity
 import indi.dmzz_yyhyy.lightnovelreader.data.storage.StorageUsageRepository
 import indi.dmzz_yyhyy.lightnovelreader.data.web.WebBookDataSourceProvider
-import indi.dmzz_yyhyy.lightnovelreader.utils.readAppLocalData
+import indi.dmzz_yyhyy.lightnovelreader.utils.convertOldId
+import io.nightfish.lightnovelreader.api.identifier.Identifier
 import io.nightfish.lightnovelreader.api.userdata.UserDataPath
-import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.cbor.Cbor
-import kotlinx.serialization.decodeFromByteArray
-import kotlinx.serialization.encodeToByteArray
+import kotlinx.coroutines.CancellationException
 import javax.inject.Inject
 import javax.inject.Singleton
 
-@Suppress("OPT_IN_USAGE")
 @Singleton
 class LocalDataManager @Inject constructor(
     @param:ApplicationContext private val context: Context,
@@ -45,16 +33,14 @@ class LocalDataManager @Inject constructor(
     private val formattingRuleDao: FormattingRuleDao,
     private val userReadingDataDao: UserReadingDataDao,
     private val userDataDao: UserDataDao,
-    private val storageUsageRepository: StorageUsageRepository
+    private val storageUsageRepository: StorageUsageRepository,
+    private val database: LightNovelReaderDatabase,
+    private val operations: LocalDataOperationCoordinator
 ) {
-    companion object {
-        const val TAG = "LocalDataManager"
-    }
+    companion object { const val TAG = "LocalDataManager" }
 
     val currentAppDataVersion = 0
-    val localDataDir = context.dataDir.resolve("local_data").also {
-        if (!it.exists()) it.mkdirs()
-    }
+    val localDataDir get() = operations.store.directory
     val webDataSourceUserDataPathSet = mutableSetOf<String>()
 
     fun registerWebDataSourceUserData(path: String) {
@@ -66,31 +52,23 @@ class LocalDataManager @Inject constructor(
         bookshelf: Boolean = true,
         readingRecord: Boolean = true,
         settings: Boolean = true
-    ): Result<AppLocalData, Throwable> {
-        val localDataList = mutableListOf<LocalData>()
-        localDataDir.listFiles()?.forEach {
-            it.inputStream().use { inputStream ->
-                Cbor.decodeFromByteArray<LocalData>(inputStream.readAppLocalData())
-            }.let(localDataList::add)
-        }
-        exportCurrentLocalData(
-            localBookCache, bookshelf, readingRecord, settings
-        ).let {
-            it.component1() ?: return it.asErr()
-        }.let(localDataList::add)
-        val globalLocalData = LocalData.empty()
-            .copy(userDataEntities = if (settings) userDataDao.getAllEntities().filter {
-                !webDataSourceUserDataPathSet.contains(it.path) &&
-                        it.path != UserDataPath.Settings.Data.StorageUsageSnapshot.path
+    ): Result<AppLocalData, Throwable> = attempt {
+        operations.exclusive {
+            val activeId = currentSourceId()
+            // Read inactive snapshots first; the active archive is deliberately ignored.
+            val snapshots = operations.store.readAll(setOf(activeId)).toMutableMap()
+            val (active, global) = database.withTransaction {
+                currentSnapshot(localBookCache, bookshelf, readingRecord, settings) to globalSnapshot()
             }
-            else emptyList())
-        return Ok(
+            snapshots[activeId] = active
             AppLocalData(
                 version = currentAppDataVersion,
-                localDataList = localDataList,
-                globalLocalData = globalLocalData
+                localDataList = snapshots.values.map {
+                    filterLocalData(it, localBookCache, bookshelf, readingRecord, settings)
+                },
+                globalLocalData = if (settings) global else LocalData.empty()
             )
-        )
+        }
     }
 
     suspend fun exportCurrentLocalData(
@@ -98,249 +76,143 @@ class LocalDataManager @Inject constructor(
         bookshelf: Boolean = true,
         readingRecord: Boolean = true,
         settings: Boolean = true
-    ): Result<LocalData, Throwable> {
-        val exportOptionLocalData = ExportOptionLocalData(
-            bookBookInformationDao = bookBookInformationDao,
-            bookRecordDao = bookRecordDao,
-            dailyCountDao = dailyCountDao,
-            bookshelfDao = bookshelfDao,
-            chapterContentDao = chapterContentDao,
-            bookVolumesDao = bookVolumesDao,
-            formattingRuleDao = formattingRuleDao,
-            userReadingDataDao = userReadingDataDao,
-            userDataDao = userDataDao,
-            webDataSourceUserDataPathSet = webDataSourceUserDataPathSet
+    ): Result<LocalData, Throwable> = attempt {
+        operations.exclusive {
+            database.withTransaction {
+                currentSnapshot(localBookCache, bookshelf, readingRecord, settings)
+            }
+        }
+    }
+
+    suspend fun importAppLocalData(
+        appLocalData: AppLocalData,
+        overwrite: Boolean = false
+    ): Result<Unit, Throwable> = attempt {
+        // Validate before touching the current database or any stored source archive.
+        val backup = validateBackup(appLocalData)
+        operations.exclusive {
+            val activeId = currentSourceId()
+            val incoming = backup.localDataList.associateBy { it.webBookDataSourceId!! }
+            val saved = if (overwrite) emptyMap() else operations.store.readAll(setOf(activeId))
+            val replacements = incoming.filterKeys { it != activeId }.mapValues { (id, value) ->
+                saved[id]?.let { mergeLocalData(it, value) } ?: value
+            }
+            var activeToWrite: LocalData? = null
+            var globalToWrite: LocalData? = null
+            operations.commit(
+                replaceAll = overwrite,
+                files = {
+                    val active = if (overwrite) {
+                        incoming[activeId] ?: emptySource(activeId)
+                    } else {
+                        incoming[activeId]?.let { mergeLocalData(currentSnapshot(), it) }
+                            ?: currentSnapshot()
+                    }
+                    val global = if (overwrite) backup.globalLocalData
+                        else mergeLocalData(globalSnapshot(), backup.globalLocalData)
+                    activeToWrite = active
+                    globalToWrite = global
+                    // Repair a stale active archive from the same authoritative DB snapshot.
+                    if (overwrite) replacements else replacements + (activeId to active)
+                },
+                updateDatabase = {
+                    clearSourceData()
+                    if (overwrite) userDataDao.clear()
+                    writeSnapshot(requireNotNull(activeToWrite))
+                    writeSnapshot(requireNotNull(globalToWrite))
+                    // Source selection describes the live DB, not whichever source a backup
+                    // happened to be taken from. Keep it coherent until restart.
+                    setSelectedSource(activeId)
+                    userDataDao.remove(UserDataPath.Settings.Data.StorageUsageSnapshot.path)
+                }
+            )
+            invalidateStorageSnapshot()
+        }
+    }
+
+    suspend fun importLocalData(localData: LocalData): Result<Unit, Throwable> =
+        importAppLocalData(AppLocalData(currentAppDataVersion, listOf(localData), LocalData.empty()))
+
+    suspend fun importLocalDataToFile(localData: LocalData): Result<Unit, Throwable> =
+        importLocalData(localData)
+
+    suspend fun importLocalDataToDatabase(localData: LocalData): Result<Unit, Throwable> =
+        if (localData.webBookDataSourceId == null) attempt {
+            validateLocalData(localData, global = true)
+            operations.exclusive {
+                database.withTransaction { writeSnapshot(mergeLocalData(globalSnapshot(), localData)) }
+            }
+        } else importLocalData(localData)
+
+    /** Saves the current source and restores the target as one recoverable operation. */
+    suspend fun switchSource(target: Identifier): Result<Unit, Throwable> = attempt {
+        val targetId = SourceSnapshotStore.normalizeSourceId(target)
+        operations.exclusive {
+            val activeId = currentSourceId()
+            if (targetId != activeId) {
+                val restored = operations.store.read(targetId) ?: emptySource(targetId)
+                validateLocalData(restored, global = false)
+                operations.commit(
+                    files = { mapOf(activeId to currentSnapshot()) },
+                    updateDatabase = {
+                        clearSourceData()
+                        writeSnapshot(restored)
+                        setSelectedSource(targetId)
+                        userDataDao.remove(UserDataPath.Settings.Data.StorageUsageSnapshot.path)
+                    }
+                )
+                invalidateStorageSnapshot()
+            }
+        }
+    }
+
+    suspend fun cleanDatabaseWithoutGlobalUserData() = operations.exclusive {
+        database.withTransaction { clearSourceData() }
+        invalidateStorageSnapshot()
+    }
+
+    private fun currentSourceId(): Identifier {
+        // The selected source is committed with the DB replacement. During the brief
+        // restart handoff, the running provider may still point at the previous source.
+        val selected = userDataDao.getEntity(UserDataPath.Settings.Data.WebDataSourceId.path)
+            ?.value?.convertOldId() ?: webDataSourceProvider.value.id
+        return SourceSnapshotStore.normalizeSourceId(selected)
+    }
+
+    private suspend fun currentSnapshot(
+        localBookCache: Boolean = true,
+        bookshelf: Boolean = true,
+        readingRecord: Boolean = true,
+        settings: Boolean = true
+    ): LocalData {
+        val option = ExportOptionLocalData(
+            bookBookInformationDao, bookRecordDao, dailyCountDao, bookshelfDao,
+            chapterContentDao, bookVolumesDao, formattingRuleDao, userReadingDataDao,
+            userDataDao, webDataSourceUserDataPathSet
         ).apply {
             this.localBookCache.enable = localBookCache
             this.bookshelf.enable = bookshelf
             this.readingRecord.enable = readingRecord
             this.settings.enable = settings
         }
-
-        return runCatching {
-            exportOptionLocalData.solve()
-        }.andThen {
-            Ok(
-                LocalData(
-                    webBookDataSourceId = webDataSourceProvider.value.id,
-                    bookInformationEntities = exportOptionLocalData.bookInformationEntities,
-                    bookRecordEntities = exportOptionLocalData.bookRecordEntities,
-                    dailyCountEntities = exportOptionLocalData.dailyCountEntities,
-                    bookshelfEntities = exportOptionLocalData.bookshelfEntities,
-                    bookshelfBookMetadataEntities = exportOptionLocalData.bookshelfBookMetadataEntities,
-                    chapterContentEntities = exportOptionLocalData.chapterContentEntities,
-                    chapterInformationEntities = exportOptionLocalData.chapterInformationEntities,
-                    formattingRuleEntities = exportOptionLocalData.formattingRuleEntities,
-                    userReadingDataEntities = exportOptionLocalData.userReadingDataEntities,
-                    volumeEntities = exportOptionLocalData.volumeEntities,
-                    userDataEntities = exportOptionLocalData.userDataEntities
-                )
-            )
-        }
+        option.solve()
+        return LocalData(
+            currentSourceId(), option.bookInformationEntities, option.bookRecordEntities,
+            option.dailyCountEntities, option.bookshelfEntities, option.bookshelfBookMetadataEntities,
+            option.chapterContentEntities, option.chapterInformationEntities, option.formattingRuleEntities,
+            option.userDataEntities, option.userReadingDataEntities, option.volumeEntities
+        )
     }
 
-    suspend fun importAppLocalData(appLocalData: AppLocalData): Result<Unit, Throwable> {
-        if (currentAppDataVersion != appLocalData.version) {
-            Log.e(TAG, "Unsupported data versions")
-            return Err(Error("Unsupported data versions"))
+    private fun globalSnapshot() = LocalData.empty().copy(
+        userDataEntities = userDataDao.getAllEntities().filter {
+            it.path !in webDataSourceUserDataPathSet &&
+                it.path != UserDataPath.Settings.Data.StorageUsageSnapshot.path &&
+                it.path != SourceSnapshotStore.COMMIT_MARKER_PATH
         }
-        importLocalDataToDatabase(appLocalData.globalLocalData)
-        for (localData in appLocalData.localDataList) {
-            importLocalData(localData).let {
-                it.component1() ?: return it.asErr()
-            }
-        }
-        storageUsageRepository.invalidateSnapshot()
-        return Ok(Unit)
-    }
+    )
 
-    suspend fun importLocalData(localData: LocalData): Result<Unit, Throwable> {
-        val webDataSourceId = webDataSourceProvider.value.id
-        return if (localData.webBookDataSourceId == webDataSourceId) {
-            importLocalDataToDatabase(localData)
-        } else importLocalDataToFile(localData)
-    }
-
-    fun importLocalDataToFile(localData: LocalData): Result<Unit, Throwable> {
-        val webDataSourceId = localData.webBookDataSourceId
-        val oldLocalDataFile = localDataDir.resolve(webDataSourceId.toString())
-        if (!oldLocalDataFile.exists()) {
-            return oldLocalDataFile.outputStream().buffered().use {
-                runCatching {
-                    it.write(Cbor.encodeToByteArray(localData))
-                }
-            }
-        }
-        val oldLocalData = oldLocalDataFile.inputStream().buffered().use {
-            runCatching {
-                Cbor.decodeFromByteArray<LocalData>(it.readBytes())
-            }
-        }.let {
-            it.component1() ?: return it.asErr()
-        }
-        val newBookInformationEntitiesMap = mapOf(
-            *localData.bookInformationEntities.map { Pair(it.id, it) }.toTypedArray()
-        )
-        val newBookRecordEntitiesMap = mapOf(
-            *localData.bookRecordEntities.map { Pair(Pair(it.bookId, it.date), it) }.toTypedArray()
-        )
-        val newDailyCountEntitiesMap = mapOf(
-            *localData.dailyCountEntities.map { Pair(it.date, it) }.toTypedArray()
-        )
-        val newBookshelfEntitiesMap = mapOf(
-            *localData.bookshelfEntities.map { Pair(it.id, it) }.toTypedArray()
-        )
-        val newBookshelfBookMetadataEntitiesMap = mapOf(
-            *localData.bookshelfBookMetadataEntities.map { Pair(it.id, it) }.toTypedArray()
-        )
-        val newChapterContentEntitiesMap = mapOf(
-            *localData.chapterContentEntities.map { Pair(it.id, it) }.toTypedArray()
-        )
-        val newChapterInformationEntitiesMap = mapOf(
-            *localData.chapterInformationEntities.map { Pair(it.id, it) }.toTypedArray()
-        )
-        val newFormattingRuleEntitiesMap = mapOf(
-            *localData.formattingRuleEntities.map { Pair(it.id, it) }.toTypedArray()
-        )
-        val newUserDataEntitiesMap = mapOf(
-            *localData.userDataEntities.map { Pair(it.path, it) }.toTypedArray()
-        )
-        val newUserReadingDataEntitiesMap = mapOf(
-            *localData.userReadingDataEntities.map { Pair(it.id, it) }.toTypedArray()
-        )
-        val newVolumeEntitiesMap = mapOf(
-            *localData.volumeEntities.map { Pair(it.volumeId, it) }.toTypedArray()
-        )
-        val mergedLocalData = localData.copy(
-            bookInformationEntities = oldLocalData.bookInformationEntities.map { old ->
-                newBookInformationEntitiesMap[old.id]?.let {
-                    old.merge(it)
-                } ?: old
-            },
-            bookRecordEntities = oldLocalData.bookRecordEntities.map { old ->
-                newBookRecordEntitiesMap[Pair(old.bookId, old.date)]?.let {
-                    old.merge(it)
-                } ?: old
-            },
-            dailyCountEntities = oldLocalData.dailyCountEntities.map { old ->
-                newDailyCountEntitiesMap[old.date]?.let {
-                    old.merge(it)
-                } ?: old
-            },
-            bookshelfEntities = oldLocalData.bookshelfEntities.map { old ->
-                newBookshelfEntitiesMap[old.id]?.let {
-                    old.merge(it)
-                } ?: old
-            },
-            bookshelfBookMetadataEntities = oldLocalData.bookshelfBookMetadataEntities.map { old ->
-                newBookshelfBookMetadataEntitiesMap[old.id]?.let {
-                    old.merge(it)
-                } ?: old
-            },
-            chapterContentEntities = oldLocalData.chapterContentEntities.map { old ->
-                newChapterContentEntitiesMap[old.id]?.let {
-                    old.merge(it)
-                } ?: old
-            },
-            chapterInformationEntities = oldLocalData.chapterInformationEntities.map { old ->
-                newChapterInformationEntitiesMap[old.id]?.let {
-                    old.merge(it)
-                } ?: old
-            },
-            formattingRuleEntities = oldLocalData.formattingRuleEntities.map { old ->
-                newFormattingRuleEntitiesMap[old.id]?.let {
-                    old.merge(it)
-                } ?: old
-            },
-            userDataEntities = oldLocalData.userDataEntities.map { old ->
-                newUserDataEntitiesMap[old.path]?.let {
-                    old.merge(it)
-                } ?: old
-            },
-            userReadingDataEntities = oldLocalData.userReadingDataEntities.map { old ->
-                newUserReadingDataEntitiesMap[old.id]?.let {
-                    old.merge(it)
-                } ?: old
-            },
-            volumeEntities = oldLocalData.volumeEntities.map { old ->
-                newVolumeEntitiesMap[old.volumeId]?.let {
-                    old.merge(it)
-                } ?: old
-            },
-        )
-        return oldLocalDataFile.outputStream().buffered().use {
-            runCatching {
-                it.write(Cbor.encodeToByteArray(mergedLocalData))
-            }
-        }.also {
-            runCatching {
-                runBlocking { storageUsageRepository.invalidateSnapshot() }
-            }
-        }
-    }
-
-    suspend fun importLocalDataToDatabase(localData: LocalData): Result<Unit, Throwable> {
-        for (entity in localData.bookInformationEntities) {
-            bookBookInformationDao.insert(
-                bookBookInformationDao.getEntity(entity.id)?.let(entity::merge) ?: entity
-            )
-        }
-        for (entity in localData.bookRecordEntities) {
-            val merged = bookRecordDao
-                .getBookRecordByIdAndDate(entity.bookId, entity.date)
-                ?.merge(entity)
-                ?: entity
-            bookRecordDao.insertBookRecord(merged)
-        }
-        for (entity in localData.dailyCountEntities) {
-            val merged = dailyCountDao.getEntity(entity.date)?.merge(entity) ?: entity
-            dailyCountDao.insert(merged)
-        }
-        for (entity in localData.bookshelfEntities) {
-            bookshelfDao.insertBookshelf(
-                bookshelfDao.getBookshelf(entity.id)?.let(entity::merge) ?: entity
-            )
-        }
-        for (entity in localData.bookshelfBookMetadataEntities) {
-            bookshelfDao.insertBookshelfBookMetadata(
-                bookshelfDao.getBookshelfBookMetadataEntity(
-                    entity.id
-                )?.let(entity::merge) ?: entity
-            )
-        }
-        for (entity in localData.chapterContentEntities) {
-            chapterContentDao.update(chapterContentDao.get(entity.id)?.let(entity::merge) ?: entity)
-        }
-        for (entity in localData.chapterInformationEntities) {
-            bookVolumesDao.insertChapterInformationEntities(
-                bookVolumesDao.getChapterInformationEntity(
-                    entity.id
-                )?.let(entity::merge) ?: entity
-            )
-        }
-        for (entity in localData.volumeEntities) {
-            bookVolumesDao.insertVolume(
-                bookVolumesDao.getVolumeEntity(entity.volumeId)?.let(entity::merge) ?: entity
-            )
-        }
-        for (entity in localData.formattingRuleEntities) {
-            formattingRuleDao.update(
-                formattingRuleDao.getBookRuleEntity(entity.id)?.let(entity::merge) ?: entity
-            )
-        }
-        for (entity in localData.userReadingDataEntities) {
-            userReadingDataDao.insert(
-                userReadingDataDao.getEntity(entity.id)?.let(entity::merge) ?: entity
-            )
-        }
-        for (entity in localData.userDataEntities) {
-            userDataDao.insert(userDataDao.getEntity(entity.path)?.let(entity::merge) ?: entity)
-        }
-        storageUsageRepository.invalidateSnapshot()
-        return Ok(Unit)
-    }
-
-    suspend fun cleanDatabaseWithoutGlobalUserData() {
+    private suspend fun clearSourceData() {
         bookBookInformationDao.clear()
         bookRecordDao.clear()
         dailyCountDao.clear()
@@ -349,14 +221,83 @@ class LocalDataManager @Inject constructor(
         chapterContentDao.clear()
         formattingRuleDao.clear()
         userReadingDataDao.clear()
+        for (path in webDataSourceUserDataPathSet) userDataDao.remove(path)
+    }
 
-        for (entity in userDataDao.getAllEntities()) {
-            if (!webDataSourceUserDataPathSet.contains(entity.path)) continue
-            userDataDao.remove(entity.path)
+    private suspend fun writeSnapshot(data: LocalData) {
+        for (entity in data.bookInformationEntities) bookBookInformationDao.insert(entity)
+        for (entity in data.bookRecordEntities) bookRecordDao.insertBookRecord(entity)
+        for (entity in data.dailyCountEntities) dailyCountDao.insert(entity)
+        for (entity in data.bookshelfEntities) bookshelfDao.insertBookshelf(entity)
+        for (entity in data.bookshelfBookMetadataEntities) bookshelfDao.insertBookshelfBookMetadata(entity)
+        for (entity in data.chapterContentEntities) chapterContentDao.update(entity)
+        for (entity in data.chapterInformationEntities) bookVolumesDao.insertChapterInformationEntities(entity)
+        for (entity in data.volumeEntities) bookVolumesDao.insertVolume(entity)
+        for (entity in data.formattingRuleEntities) formattingRuleDao.update(entity)
+        for (entity in data.userReadingDataEntities) userReadingDataDao.insert(entity)
+        for (entity in data.userDataEntities) {
+            if (entity.path != SourceSnapshotStore.COMMIT_MARKER_PATH &&
+                entity.path != UserDataPath.Settings.Data.StorageUsageSnapshot.path &&
+                entity.path != UserDataPath.Settings.Data.WebDataSourceId.path) userDataDao.insert(entity)
         }
-        runCatching {
-            storageUsageRepository.invalidateSnapshot()
+    }
+
+    private suspend fun setSelectedSource(id: Identifier) {
+        userDataDao.insert(UserDataEntity(
+            UserDataPath.Settings.Data.WebDataSourceId.path,
+            UserDataPath.Settings.Data.WebDataSourceId.path.substringBeforeLast('.'),
+            "String", id.toString()
+        ))
+    }
+
+    private fun validateBackup(backup: AppLocalData): AppLocalData {
+        require(backup.version == currentAppDataVersion) { "Unsupported backup version: ${backup.version}" }
+        validateLocalData(backup.globalLocalData, global = true)
+        val snapshots = linkedMapOf<Identifier, LocalData>()
+        for (raw in backup.localDataList) {
+            val snapshot = raw.copy(webBookDataSourceId = normalizeLocalDataSourceId(raw.webBookDataSourceId))
+            validateLocalData(snapshot, global = false)
+            val id = snapshot.webBookDataSourceId!!
+            snapshots[id] = snapshots[id]?.let { mergeLocalData(it, snapshot) }
+                ?: mergeLocalData(emptySource(id), snapshot)
         }
+        return backup.copy(localDataList = snapshots.values.toList())
+    }
+
+    private fun validateLocalData(data: LocalData, global: Boolean) {
+        if (global) {
+            require(data.webBookDataSourceId == null) { "Global data must not have a source ID" }
+            require(data.copy(userDataEntities = emptyList()) == LocalData.empty()) {
+                "Global snapshot contains source-specific records"
+            }
+        } else {
+            SourceSnapshotStore.normalizeSourceId(requireNotNull(data.webBookDataSourceId) {
+                "Missing source ID"
+            })
+        }
+        require(data.bookRecordEntities.all { it.reads >= 0 && it.seconds >= 0 }) { "Invalid reading counters" }
+        require(data.userReadingDataEntities.all { row ->
+            row.totalReadTime >= 0 && row.readingProgress.isFinite() && row.readingProgress in 0f..1f &&
+                (row.currentChapterReadingProgressMap.values + row.maxChapterReadingProgressMap.values)
+                    .all { it.isFinite() && it in 0f..1f }
+        }) { "Invalid reading progress" }
+    }
+
+    private fun emptySource(id: Identifier) = LocalData.empty().copy(webBookDataSourceId = id)
+
+    private suspend fun invalidateStorageSnapshot() {
+        // Derived UI state must not turn a successful restore into a failed WorkManager job.
+        try { storageUsageRepository.invalidateSnapshot() }
+        catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: Exception) { }
+    }
+
+    private suspend fun <T> attempt(block: suspend () -> T): Result<T, Throwable> = try {
+        Ok(block())
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (failure: Exception) {
+        Err(failure)
     }
 
     init {

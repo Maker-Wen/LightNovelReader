@@ -21,7 +21,7 @@ def artifact(group, name, version="*", extension="jar"):
     return matches[-1]
 
 
-def run_check(main_class, sources, dependencies=(), stubs=None):
+def run_check(main_class, sources, dependencies=(), stubs=None, compiler_plugins=()):
     compiler = artifact("org.jetbrains.kotlin", "kotlin-compiler-embeddable", versions["kotlin"])
     pom = artifact("org.jetbrains.kotlin", "kotlin-compiler-embeddable", versions["kotlin"], "pom")
     namespace = {"m": "http://maven.apache.org/POM/4.0.0"}
@@ -45,5 +45,7 @@ def run_check(main_class, sources, dependencies=(), stubs=None):
         output = Path(temporary) / "checks.jar"
         subprocess.run([str(java), "-cp", os.pathsep.join(map(str, [compiler, *compiler_dependencies])),
                         "org.jetbrains.kotlin.cli.jvm.K2JVMCompiler", "-no-stdlib", "-no-reflect",
-                        "-classpath", classpath, "-d", str(output), *map(str, compiled_sources)], check=True)
+                        "-classpath", classpath, "-d", str(output),
+                        *(f"-Xplugin={artifact(*plugin)}" for plugin in compiler_plugins),
+                        *map(str, compiled_sources)], check=True)
         subprocess.run([str(java), "-cp", str(output) + os.pathsep + classpath, main_class], check=True)

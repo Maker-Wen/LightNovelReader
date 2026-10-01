@@ -6,6 +6,7 @@ import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
 import androidx.work.WorkManager
 import dagger.hilt.android.HiltAndroidApp
+import indi.dmzz_yyhyy.lightnovelreader.data.local.LocalDataOperationCoordinator
 import indi.dmzz_yyhyy.lightnovelreader.data.logging.LogLevel
 import indi.dmzz_yyhyy.lightnovelreader.data.logging.LoggerRepository
 import indi.dmzz_yyhyy.lightnovelreader.data.plugin.PluginManager
@@ -37,6 +38,8 @@ class LightNovelReaderApplication : Application(), Configuration.Provider {
     lateinit var pluginUpdateCheckRepository: PluginUpdateCheckRepository
     @Inject
     lateinit var matomoAnalytics: MatomoAnalytics
+    @Inject
+    lateinit var localDataOperations: LocalDataOperationCoordinator
 
     override val workManagerConfiguration: Configuration
         get() =
@@ -57,6 +60,7 @@ class LightNovelReaderApplication : Application(), Configuration.Provider {
         }
         // We have to ensure the plugin load before the activity start up, so we use run blocking here though it will block the main thread
         runBlocking {
+            localDataOperations.recover()
             pluginManager.initAllPlugin()
         }
         coroutineScope.launch(Dispatchers.IO) {

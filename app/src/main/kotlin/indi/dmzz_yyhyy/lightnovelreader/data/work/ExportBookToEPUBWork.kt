@@ -180,7 +180,10 @@ class ExportBookToEPUBWork @AssistedInject constructor(
         )
         includeImages = inputData.getBoolean("includeImages", true)
         val selectedVolumeRaw = inputData.getString("selectedVolume")
-        val selectedVolumes = selectedVolumeRaw?.split(",")
+        val selectedVolumes = selectedVolumeRaw
+            ?.split(",")
+            ?.map(String::trim)
+            ?.filter(String::isNotEmpty)
         Log.d(
             TAG,
             "start export bookId=$bookId type=$exportType includeImages=$includeImages selectedVolume=$selectedVolumeRaw"
@@ -306,7 +309,12 @@ class ExportBookToEPUBWork @AssistedInject constructor(
         fileUri: Uri
     ): Result = withContext(Dispatchers.IO) {
         Log.d(TAG, "export volumes=$selectedVolume")
-        val epubMap = mutableMapOf<String, EpubBuilder>()
+        if (selectedVolume.isEmpty()) {
+            downloadItem.progress = -1f
+            updateFailureNotification(bookId)
+            return@withContext Result.failure()
+        }
+        val epubs = mutableListOf<Pair<String, EpubBuilder>>()
         if (bookInformation.coverUri == Uri.EMPTY) {
             DefaultBookCoverRenderer.writeTo(
                 applicationContext,
@@ -353,7 +361,13 @@ class ExportBookToEPUBWork @AssistedInject constructor(
                     }
                 }
             }
-            epubMap[volume.volumeTitle] = epub
+            epubs += volume.volumeTitle to epub
+        }
+
+        if (epubs.isEmpty()) {
+            downloadItem.progress = -1f
+            updateFailureNotification(bookId)
+            return@withContext Result.failure()
         }
 
         Log.d(TAG, "image tasks size=${tasks.size}")
@@ -388,29 +402,36 @@ class ExportBookToEPUBWork @AssistedInject constructor(
             downloadItem.progress = -1f
             return@withContext Result.failure()
         }
-        for (epub in epubMap.entries) {
-            Log.d(TAG, "save epub=${epub.key}")
-            val epubUri = folder.createFile(
-                "application/epub+zip",
-                "${bookInformation.title} ${epub.key}.epub"
-            )?.uri
-            if (epubUri == null) {
-                downloadItem.progress = -1f
-                return@withContext Result.failure()
+        try {
+            for ((volumeTitle, epub) in epubs) {
+                Log.d(TAG, "save epub=$volumeTitle")
+                val epubUri = folder.createFile(
+                    "application/epub+zip",
+                    "${bookInformation.title} $volumeTitle.epub"
+                )?.uri
+                if (epubUri == null) {
+                    downloadItem.progress = -1f
+                    return@withContext Result.failure()
+                }
+                val result = saveEpub(
+                    bookId,
+                    downloadItem,
+                    tempDir,
+                    epub,
+                    epubUri,
+                    cleanupTempDir = false,
+                    notifyCompletion = false
+                )
+                if (result == Result.failure()) {
+                    downloadItem.progress = -1f
+                    return@withContext Result.failure()
+                }
             }
-            val result = saveEpub(
-                bookId,
-                downloadItem,
-                tempDir,
-                epub.value,
-                epubUri
-            )
-            if (result == Result.failure()) {
-                downloadItem.progress = -1f
-                return@withContext Result.failure()
-            }
+        } finally {
+            tempDir.deleteRecursively()
         }
 
+        updateCompletionNotification(bookId)
         return@withContext Result.success()
     }
 
@@ -521,11 +542,11 @@ class ExportBookToEPUBWork @AssistedInject constructor(
         title(it.title)
         content {
             contentComponentRepository.forEachComponent(bookContentMap[it.id]!!.content) {
-                bodyElement.add(
-                    it.toHtmlElement(applicationContext).also { element ->
-                        element.parseSrc(tempDir, tasks, epubBuilder, includeImages)
+                it.toHtmlElement(applicationContext).also { element ->
+                    if (element.parseSrc(tempDir, tasks, epubBuilder, includeImages)) {
+                        bodyElement.add(element)
                     }
-                )
+                }
             }
         }
     }
@@ -535,9 +556,13 @@ class ExportBookToEPUBWork @AssistedInject constructor(
         tasks: MutableList<ImageDownloader.Task>,
         epubBuilder: EpubBuilder,
         includeImages: Boolean
-    ) {
+    ): Boolean {
+        if (name == "img" && !includeImages) {
+            parent?.remove(this)
+            return false
+        }
         val src = this.attributes().firstOrNull { it.name == "src" }
-        if (src != null && src.value.runCatching { this.toUri() }.isSuccess) {
+        if (src != null && src.value.isNotBlank() && src.value.runCatching { this.toUri() }.isSuccess) {
             val id = src.value.hashCode()
             val image = tempDir.resolve("image_$id.jpg")
             tasks.add(ImageDownloader.Task(image, src.value.toUri()))
@@ -548,9 +573,10 @@ class ExportBookToEPUBWork @AssistedInject constructor(
                 file = image
             )
         }
-        this.elements().forEach {
+        this.elements().toList().forEach {
             it.parseSrc(tempDir, tasks, epubBuilder, includeImages)
         }
+        return true
     }
 
     private fun saveEpub(
@@ -558,7 +584,9 @@ class ExportBookToEPUBWork @AssistedInject constructor(
         downloadItem: MutableDownloadItem,
         tempDir: File,
         epub: EpubBuilder,
-        fileUri: Uri
+        fileUri: Uri,
+        cleanupTempDir: Boolean = true,
+        notifyCompletion: Boolean = true
     ): Result {
         Log.d(TAG, applicationContext.getString(R.string.epub_export_notification_stage_save))
         downloadItem.progress = 0.90f
@@ -574,8 +602,17 @@ class ExportBookToEPUBWork @AssistedInject constructor(
             return Result.failure()
         }
         downloadItem.progress = 0.95f
-        applicationContext.contentResolver.openOutputStream(fileUri)
-            ?.use { outputStream ->
+        val outputStream = try {
+            applicationContext.contentResolver.openOutputStream(fileUri)
+                ?: throw IllegalStateException("Unable to open EPUB output URI: $fileUri")
+        } catch (e: Exception) {
+            Log.e(TAG, "open output failed", e)
+            updateFailureNotification(bookId)
+            downloadItem.progress = -1f
+            return Result.failure()
+        }
+        try {
+            outputStream.use { output ->
                 FileInputStream(file).use { inputStream ->
                     val buffer = ByteArray(1024 * 1024) // = 1MB
                     var bytesRead: Int
@@ -583,7 +620,7 @@ class ExportBookToEPUBWork @AssistedInject constructor(
                     val fileSize = file.length()
 
                     while (inputStream.read(buffer).also { bytesRead = it } != -1) {
-                        outputStream.write(buffer, 0, bytesRead)
+                        output.write(buffer, 0, bytesRead)
                         totalBytes += bytesRead
                         if (fileSize > 0) {
                             val writeProgress = 90 + (totalBytes.toFloat() / fileSize * 10).toInt()
@@ -597,9 +634,15 @@ class ExportBookToEPUBWork @AssistedInject constructor(
                     }
                 }
             }
-        tempDir.deleteRecursively()
+        } catch (e: Exception) {
+            Log.e(TAG, "write output failed", e)
+            updateFailureNotification(bookId)
+            downloadItem.progress = -1f
+            return Result.failure()
+        }
         Log.d(TAG, "save finished")
-        updateCompletionNotification(bookId)
+        if (cleanupTempDir) tempDir.deleteRecursively()
+        if (notifyCompletion) updateCompletionNotification(bookId)
         return Result.success()
     }
 }

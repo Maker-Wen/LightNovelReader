@@ -26,6 +26,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.encodeToJsonElement
+import org.dom4j.DocumentHelper
 import org.dom4j.Element
 
 @Serializable
@@ -78,7 +79,24 @@ data class ParagraphComponentData(
     override fun toJsonElement(): JsonElement = jsonSerializer.toJsonElement(this)
 
     override fun toHtmlElement(context: Context): Element {
-        TODO("Not yet implemented")
+        // Keep the same block-level shape as the former simple-text component.
+        // DOM4J escapes text when it serializes the document, so source text
+        // cannot accidentally become markup in the exported EPUB.
+        return DocumentHelper.createElement("div").apply {
+            if (paragraph.textNodes.isEmpty()) {
+                addElement("br")
+            }
+
+            paragraph.textNodes.forEach { textNode ->
+                val lines = textNode.text
+                    .replace(INVALID_XML_CONTROL_CHARACTERS, "")
+                    .split("\n", ignoreCase = false, limit = Int.MAX_VALUE)
+                lines.forEachIndexed { lineIndex, line ->
+                    addText(line)
+                    if (lineIndex < lines.lastIndex) addElement("br")
+                }
+            }
+        }
     }
 
     override suspend fun split(
@@ -161,6 +179,9 @@ data class ParagraphComponentData(
      * @since Api 4
      */
     companion object {
+        private val INVALID_XML_CONTROL_CHARACTERS =
+            Regex("[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F]")
+
         /** 文本件的唯一标识字符串 */
         val id = "paragraph".ofAppId()
 

@@ -10,11 +10,9 @@ import com.github.michaelbull.result.onErr
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import indi.dmzz_yyhyy.lightnovelreader.data.local.LocalDataManager
-import indi.dmzz_yyhyy.lightnovelreader.data.local.cbor.AppLocalData
-import indi.dmzz_yyhyy.lightnovelreader.utils.readAppLocalData
+import indi.dmzz_yyhyy.lightnovelreader.data.local.SourceSnapshotStore
 import kotlinx.serialization.ExperimentalSerializationApi
-import kotlinx.serialization.cbor.Cbor
-import kotlinx.serialization.decodeFromByteArray
+import kotlinx.coroutines.CancellationException
 import java.io.FileInputStream
 
 @HiltWorker
@@ -35,18 +33,17 @@ class ImportDataWork @AssistedInject constructor(
             applicationContext.contentResolver.openFileDescriptor(fileUri, "r")
                 ?.use { parcelFileDescriptor ->
                     FileInputStream(parcelFileDescriptor.fileDescriptor).use { inputStream ->
-                        Cbor.decodeFromByteArray<AppLocalData>(inputStream.readAppLocalData())
+                        SourceSnapshotStore.readBackup(inputStream)
                     }
                 }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Failed to load file")
             e.printStackTrace()
             return Result.failure()
         } ?: return Result.failure()
-        if (overwrite) {
-            localDataManager.cleanDatabaseWithoutGlobalUserData()
-        }
-        localDataManager.importAppLocalData(appLocalData)
+        localDataManager.importAppLocalData(appLocalData, overwrite)
             .onErr {
                 Log.e(TAG, "Failed to import the data")
                 it.printStackTrace()
