@@ -206,7 +206,9 @@ fun NavEntryScope.bookDetailDestination() {
             onClickCover = navigator::navigateToImageViewerDialog,
             onClickMarkAsRead = {
                 navigator.navigateToMarkAllChaptersAsReadDialog(bookId)
-            }
+            },
+            onRetryBookInformation = viewModel::retryBookInformation,
+            onRetryBookVolumes = viewModel::retryBookVolumes
         )
     }
 }

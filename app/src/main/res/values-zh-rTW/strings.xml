@@ -455,6 +455,12 @@
     <string name="rule_replacement">替換為</string>
     <string name="rule_is_regex">使用正則匹配</string>
     <string name="edit_rule">編輯規則</string>
+    <string name="load_failed">載入失敗</string>
+    <string name="error_book_title">未知內容</string>
+    <string name="error_book_info">書本訊息載入失敗</string>
+    <string name="error_book_volumes_unavailable_generic">章節不存在</string>
+    <string name="error_chapter_content_generic">章節內文不可用</string>
+    <string name="error_data_source_generic">資料原發生錯誤</string>
     <!-- Dialogs -->
     <string name="dialog_about_version">版本</string>
     <string name="dialog_delete_bookshelf">刪除書架</string>

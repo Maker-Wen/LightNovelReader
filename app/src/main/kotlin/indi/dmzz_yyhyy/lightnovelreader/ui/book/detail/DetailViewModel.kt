@@ -26,6 +26,7 @@ import io.nightfish.lightnovelreader.api.book.RelatedBooksRequest
 import io.nightfish.lightnovelreader.api.web.WebDataSourcePriority
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -42,12 +43,52 @@ class DetailViewModel @Inject constructor(
 
     var isInitialized by mutableStateOf(false)
         private set
+    private var bookId: String? = null
+    private var bookInformationJob: Job? = null
+    private var bookVolumesJob: Job? = null
 
     fun init(bookId: String) {
         Log.d("DetailViewModel", "Init bookId = $bookId")
         if (isInitialized) return
         isInitialized = true
+        this.bookId = bookId
+        requestBookInformation(bookId)
+        requestBookVolumes(bookId)
         viewModelScope.launch(Dispatchers.IO) {
+            bookRepository.getUserReadingDataFlow(bookId).collect {
+                _uiState.userReadingData = it
+            }
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            _uiState.isCached = bookRepository.getIsBookCached(bookId)
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            bookshelfRepository.getBookshelfBookMetadataFlow(bookId).collect {
+                _uiState.isInBookshelf = it != null
+            }
+        }
+        viewModelScope.launch {
+            snapshotFlow { downloadProgressRepository.downloadItemIdList }.collect {
+                _uiState.downloadItem =
+                    downloadProgressRepository.downloadItemIdList.findLast { it.bookId == bookId && it.type == DownloadType.CACHE }
+            }
+        }
+    }
+
+    fun retryBookInformation() {
+        bookId?.let(::requestBookInformation)
+    }
+
+    fun retryBookVolumes() {
+        bookId?.let(::requestBookVolumes)
+    }
+
+    private fun requestBookInformation(bookId: String) {
+        bookInformationJob?.cancel()
+        _uiState.bookInformation = null
+        _uiState.sourceId = null
+        _uiState.authorRequest = null
+        bookInformationJob = viewModelScope.launch(Dispatchers.IO) {
             bookRepository.getSourceBookInformationFlow(bookId, WebDataSourcePriority.High)
                 .collect { sourceResult ->
                     var sourceId: String? = null
@@ -81,28 +122,14 @@ class DetailViewModel @Inject constructor(
                     _uiState.bookInformation = result
                 }
         }
-        viewModelScope.launch(Dispatchers.IO) {
+    }
+
+    private fun requestBookVolumes(bookId: String) {
+        bookVolumesJob?.cancel()
+        _uiState.bookVolumes = null
+        bookVolumesJob = viewModelScope.launch(Dispatchers.IO) {
             bookRepository.getBookVolumesFlow(bookId, WebDataSourcePriority.High).collect {
                 _uiState.bookVolumes = it
-            }
-        }
-        viewModelScope.launch(Dispatchers.IO) {
-            bookRepository.getUserReadingDataFlow(bookId).collect {
-                _uiState.userReadingData = it
-            }
-        }
-        viewModelScope.launch(Dispatchers.IO) {
-            _uiState.isCached = bookRepository.getIsBookCached(bookId)
-        }
-        viewModelScope.launch(Dispatchers.IO) {
-            bookshelfRepository.getBookshelfBookMetadataFlow(bookId).collect {
-                _uiState.isInBookshelf = it != null
-            }
-        }
-        viewModelScope.launch {
-            snapshotFlow { downloadProgressRepository.downloadItemIdList }.collect {
-                _uiState.downloadItem =
-                    downloadProgressRepository.downloadItemIdList.findLast { it.bookId == bookId && it.type == DownloadType.CACHE }
             }
         }
     }

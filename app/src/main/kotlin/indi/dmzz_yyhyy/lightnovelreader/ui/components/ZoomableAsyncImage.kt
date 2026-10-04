@@ -31,6 +31,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
@@ -44,6 +45,7 @@ import coil3.request.crossfade
 import coil3.request.transformations
 import indi.dmzz_yyhyy.lightnovelreader.R
 import indi.dmzz_yyhyy.lightnovelreader.data.image.ImageTransPostProcessingViewModel
+import indi.dmzz_yyhyy.lightnovelreader.utils.network.UserAgentGenerator
 import io.nightfish.lightnovelreader.api.image.ImagePostProcessingPipeline
 import kotlinx.coroutines.Dispatchers
 
@@ -74,7 +76,13 @@ fun ZoomableImage(
             .httpHeaders(
                 NetworkHeaders.Builder().apply {
                     header.forEach { (key, value) -> add(key, value) }
+                    if (header.keys.none { it.equals("User-Agent", ignoreCase = true) }) {
+                        add("User-Agent", UserAgentGenerator.generate())
+                    }
                 }.build()
+            ).listener(
+                onSuccess = { _, _ -> lastError = null },
+                onError = { _, result -> lastError = result.throwable.localizedMessage }
             )
             .build()
 
@@ -131,7 +139,7 @@ fun ZoomableImage(
                             retryKey++
                             lastError = null
                         }) {
-                            Text("重试")
+                            Text(stringResource(R.string.retry))
                         }
                     }
                 },

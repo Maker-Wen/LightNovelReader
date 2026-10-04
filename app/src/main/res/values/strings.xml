@@ -468,6 +468,12 @@
     <string name="rule_replacement">Replace with</string>
     <string name="rule_is_regex">Use regex matching</string>
     <string name="edit_rule">Edit Rule</string>
+    <string name="load_failed">Failed to load</string>
+    <string name="error_book_title">Unknown Content</string>
+    <string name="error_book_info">Failed to load information</string>
+    <string name="error_book_volumes_unavailable_generic">Chapters are unavailable</string>
+    <string name="error_chapter_content_generic">Chapter content is unavailable</string>
+    <string name="error_data_source_generic">Data source returned an error</string>
 
     <!-- Dialogs -->
     <string name="dialog_about_version">Version</string>
