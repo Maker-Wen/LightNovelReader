@@ -58,7 +58,7 @@ tag 也可使用 `--release-tag <tag>`，与 `--release-ref` 互斥。发布模�
 
 `.github/workflows/build-independent.yml` 仅提供 `workflow_dispatch`，需人工运行并填写必填的 `release_ref`（已确认的 commit SHA 或 tag）。workflow 完整 checkout 该 ref，并单独获取 `origin/dev/independent-edition` 历史，再准备 JDK 21、Python 和 Android SDK，调用同一构建脚本。
 
-GitHub 要求手动 workflow 文件存在于仓库默认分支，才能提供 **Run workflow** 入口。目前仓库默认分支为 `refactoring`；仅将这个文件推送到 `dev/independent-edition` 不满足前置条件。运行前先将 workflow 文件放入默认分支，或由仓库维护者决定将独立分支设置为默认分支，再到 Actions 运行。此构建流程不会修改远端默认分支。参见 [GitHub 手动运行 workflow 文档](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)。
+GitHub 要求手动 workflow 文件存在于仓库默认分支，才能提供 **Run workflow** 入口。目前仓库默认分支已设为 `dev/independent-edition`，该分支包含此 workflow，默认分支前置条件已满足，可到 Actions 人工运行。此构建流程不会修改远端默认分支。参见 [GitHub 手动运行 workflow 文档](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)。
 
 构建使用以下固定 repository secrets：
 
@@ -72,7 +72,7 @@ GitHub 要求手动 workflow 文件存在于仓库默认分支，才能提供 **
 
 运行前必须确认这些 secrets 指向与本机安装包相同的签名材料。独立版使用专用 secrets，避免覆盖旧 release 流程的签名身份。keystore 只解码到 runner 临时目录，流程结束时删除，不进入仓库或上传的 artifacts。
 
-workflow 只上传 `artifacts/apk/independent/` 的构建产物，不自动创建 GitHub Release。现有 `.github/workflows/marge.yml` 保持原样，仍按其 `dev/**`、`release/**` 分支和文件路径过滤规则触发原有 release 构建；它不提供独立版 APK。workflow 配置不等于已验证的 CI：需要实际完成一次人工运行，核对产物中的签名证书与已安装包一致，并保留成功构建记录，才能确认远端独立打包流程可用。
+workflow 只上传 `artifacts/apk/independent/` 的构建产物，不自动创建 GitHub Release。现有 `.github/workflows/marge.yml` 的 push 分支过滤已在 `dev/**`、`release/**` 之后增加 `!dev/independent-edition`，跳过独立分支；其他 dev/release 分支仍按原有文件路径过滤规则触发正常版 release 构建，它不提供独立版 APK。workflow 配置不等于已验证的 CI：需要实际完成一次人工运行，核对产物中的签名证书与已安装包一致，并保留成功构建记录，才能确认远端独立打包流程可用。
 
 ## 正式 Release 与更新元数据
 
