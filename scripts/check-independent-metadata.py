@@ -70,6 +70,25 @@ class MetadataChecks(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "installation signer"):
             verify_inspection(AGP, SIGNATURE, BADGING, MANIFEST, CONFIG, "c" * 64)
 
+    def test_sdk_interval_signer_reports_one_certificate_identity(self):
+        output = (f"Signer (minSdkVersion=28, maxSdkVersion=32) certificate SHA-256 digest: {CERTIFICATE}\n"
+                  f"Signer (minSdkVersion=33, maxSdkVersion=2147483647) certificate SHA-256 digest: {CERTIFICATE.upper()}\n")
+        self.assertEqual(signing_certificate_from_output(output), CERTIFICATE)
+        self.assertEqual(verify_inspection(AGP, output, BADGING, MANIFEST, CONFIG, CERTIFICATE)
+                         ["signingCertificateSha256"], CERTIFICATE)
+
+    def test_sdk_interval_reports_reject_multiple_certificate_identities(self):
+        output = (f"Signer (minSdkVersion=28, maxSdkVersion=32) certificate SHA-256 digest: {CERTIFICATE}\n"
+                  f"Signer (minSdkVersion=33, maxSdkVersion=2147483647) certificate SHA-256 digest: {'c' * 64}\n")
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            signing_certificate_from_output(output)
+
+    def test_sdk_interval_reports_reject_duplicate_or_mixed_labels(self):
+        interval = f"Signer (minSdkVersion=28, maxSdkVersion=32) certificate SHA-256 digest: {CERTIFICATE}\n"
+        for output in (interval * 2, interval + SIGNATURE, SIGNATURE.replace("Signer #1", "Signer #2")):
+            with self.subTest(output=output), self.assertRaises(ValueError):
+                signing_certificate_from_output(output)
+
     def test_badging_requires_numeric_sdk_and_version_code(self):
         for badging in (BADGING.replace("sdkVersion:'24'\n", ""),
                         BADGING.replace("sdkVersion:'24'", "sdkVersion:'S'"),

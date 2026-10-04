@@ -60,12 +60,19 @@ def package_from_badging(badging):
 
 
 def signing_certificate_from_output(signature):
-    certificates = re.findall(
-        r"^Signer #\d+ certificate SHA-256 digest: ([0-9a-fA-F]+)\s*$", signature, re.M
-    )
-    if len(certificates) != 1:
+    entries = list(re.finditer(
+        r"^Signer (?P<signer>#\d+|\(minSdkVersion=\d+, maxSdkVersion=\d+\))"
+        r" certificate SHA-256 digest: (?P<digest>[0-9a-fA-F]+)\s*$", signature, re.M
+    ))
+    legacy = [entry for entry in entries if entry.group("signer").startswith("#")]
+    # v3.1 reports the certificate once per SDK interval. Every interval must
+    # use the same certificate; multiple legacy signers remain unsupported.
+    if not entries or (legacy and (len(entries) != 1 or legacy[0].group("signer") != "#1")):
         raise ValueError("Expected exactly one APK signing certificate")
-    return sha256_hex(certificates[0], "APK signingCertificateSha256")
+    certificates = {sha256_hex(entry.group("digest"), "APK signingCertificateSha256") for entry in entries}
+    if len(certificates) != 1 or len({entry.group("signer") for entry in entries}) != len(entries):
+        raise ValueError("Expected exactly one APK signing certificate")
+    return certificates.pop()
 
 
 def verify_inspection(metadata, signature, badging, manifest, build_config, expected_certificate=None):
