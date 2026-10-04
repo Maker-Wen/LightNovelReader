@@ -65,11 +65,13 @@ jobs:
           printf '%s' "$INDEPENDENT_SIGNING_KEY" | base64 --decode > "$keystore_path"
           python3 scripts/build-independent.py \
             --release-ref "$RELEASE_REF" \
+            --build-tools-version 36.0.0 \
             --keystore "$keystore_path" \
             --key-alias "$INDEPENDENT_KEY_ALIAS" \
             --expected-signing-certificate-sha256 "$INDEPENDENT_SIGNING_CERTIFICATE_SHA256"
 
       - name: Upload independent build artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: LightNovelReader-independent-${{ github.run_number }}-${{ github.run_attempt }}

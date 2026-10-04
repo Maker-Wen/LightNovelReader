@@ -54,6 +54,8 @@ tag 也可使用 `--release-tag <tag>`，与 `--release-ref` 互斥。发布模�
 
 指定固定 keystore 时使用 `--keystore <path> --key-alias <alias>`，密码通过 `INDEPENDENT_STORE_PASSWORD` 和 `INDEPENDENT_KEY_PASSWORD` 环境变量提供。使用 `--expected-signing-certificate-sha256 <已确认的证书 SHA-256>` 对成品 APK 的 signer 做固定校验；CI 必须提供该值。
 
+可用 `--build-tools-version <版本>` 固定 APK 检查使用的 SDK 工具版本。独立版 CI 固定命令行工具 22.0、平台 `android-37.0` 和检查工具 `36.0.0`，与本地验收的 SDK 配置一致。构建或检查失败时仍保留诊断产物；只有成功生成元数据并通过验收的 APK 可用于正式发布。
+
 ## 人工触发的独立版 CI
 
 `.github/workflows/build-independent.yml` 仅提供 `workflow_dispatch`，需人工运行并填写必填的 `release_ref`（已确认的 commit SHA 或 tag）。workflow 完整 checkout 该 ref，并单独获取 `origin/dev/independent-edition` 历史，再准备 JDK 21、Python 和 Android SDK，调用同一构建脚本。

@@ -107,7 +107,7 @@ def java_home():
     raise SystemExit("JDK 21 is required. Set JAVA_HOME to a JDK 21 installation.")
 
 
-def sdk_tools():
+def sdk_tools(version=None):
     local = ROOT / "local.properties"
     configured = re.search(r"^sdk\.dir=(.+)$", local.read_text(), re.M) if local.exists() else None
     sdk = configured.group(1).strip().replace(r"\:", ":").replace("\\\\", "\\") if configured else (
@@ -115,12 +115,18 @@ def sdk_tools():
     if not sdk:
         raise SystemExit("Set sdk.dir in local.properties or ANDROID_HOME.")
     suffix = ".bat" if os.name == "nt" else ""
-    candidates = sorted((Path(sdk) / "build-tools").glob("*"),
-                        key=lambda path: tuple(map(int, re.findall(r"\d+", path.name))), reverse=True)
+    if version is not None:
+        if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-rc[0-9]+)?", version):
+            raise SystemExit("--build-tools-version must be an exact Android build-tools version.")
+        candidates = [Path(sdk) / "build-tools" / version]
+    else:
+        candidates = sorted((Path(sdk) / "build-tools").glob("*"),
+                            key=lambda path: tuple(map(int, re.findall(r"\d+", path.name))), reverse=True)
     for candidate in candidates:
         if (candidate / ("apksigner" + suffix)).exists() and (candidate / ("aapt.exe" if os.name == "nt" else "aapt")).exists():
             return candidate / ("apksigner" + suffix), candidate / ("aapt.exe" if os.name == "nt" else "aapt")
-    raise SystemExit("Android SDK build-tools with apksigner and aapt are required.")
+    raise SystemExit("Android SDK build-tools with apksigner and aapt are required" +
+                     (f" at version {version}." if version else "."))
 
 
 def main():
@@ -132,10 +138,11 @@ def main():
     parser.add_argument("--keystore", type=Path, help="Use a fixed signing keystore; passwords come from INDEPENDENT_*_PASSWORD")
     parser.add_argument("--key-alias", help="Signing key alias for --keystore")
     parser.add_argument("--expected-signing-certificate-sha256", help="Reject APKs whose signer differs from this SHA-256")
+    parser.add_argument("--build-tools-version", help="Use this exact installed build-tools version for APK inspection")
     args = parser.parse_args()
     checkout = validate_build_ref(args.release_tag, args.release_ref)
     env = signing_environment(args, dict(os.environ, JAVA_HOME=str(java_home())))
-    signer, aapt = sdk_tools()
+    signer, aapt = sdk_tools(args.build_tools_version)
     out = ROOT / "artifacts/apk/independent" / datetime.now().strftime("%Y%m%d-%H%M%S")
     out.mkdir(parents=True, exist_ok=False)
     source = {
@@ -200,6 +207,8 @@ def main():
     signature = run(signer, "verify", "--verbose", "--print-certs", apk)
     badging = run(aapt, "dump", "badging", apk)
     manifest = run(aapt, "dump", "xmltree", apk, "AndroidManifest.xml")
+    for name, text in [("signature.txt", signature), ("badging.txt", badging), ("manifest.txt", manifest)]:
+        (out / name).write_text(text)
     config = (ROOT / "app/build/generated/source/buildConfig/independent/indi/dmzz_yyhyy/lightnovelreader/BuildConfig.java").read_text()
     try:
         verification = verify_inspection(metadata, signature, badging, manifest, config,
@@ -212,8 +221,6 @@ def main():
     update = update_metadata_from_report(report)
     (out / "package-verification.json").write_text(json.dumps(report, indent=2) + "\n")
     (out / "update.json").write_text(json.dumps(update, indent=2, ensure_ascii=False) + "\n")
-    for name, text in [("signature.txt", signature), ("badging.txt", badging), ("manifest.txt", manifest)]:
-        (out / name).write_text(text)
     (out / "SHA256SUMS").write_text(f"{sha}  {apk.name}\n")
     mapping = ROOT / "app/build/outputs/mapping/independent/mapping.txt"
     if mapping.exists():
