@@ -1,0 +1,77 @@
+name: Build Independent APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_ref:
+        description: Confirmed commit SHA or tag from dev/independent-edition history
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the confirmed release ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_ref }}
+          fetch-depth: 0
+
+      - name: Fetch independent branch history
+        run: git fetch origin +refs/heads/dev/independent-edition:refs/remotes/origin/dev/independent-edition
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: 21
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: sdkmanager 'platforms;android-37' 'build-tools;37.0.0'
+
+      - name: Build and verify the independent APK
+        env:
+          RELEASE_REF: ${{ inputs.release_ref }}
+          INDEPENDENT_SIGNING_KEY: ${{ secrets.INDEPENDENT_SIGNING_KEY }}
+          INDEPENDENT_KEY_ALIAS: ${{ secrets.INDEPENDENT_KEY_ALIAS }}
+          INDEPENDENT_STORE_PASSWORD: ${{ secrets.INDEPENDENT_STORE_PASSWORD }}
+          INDEPENDENT_KEY_PASSWORD: ${{ secrets.INDEPENDENT_KEY_PASSWORD }}
+          INDEPENDENT_SIGNING_CERTIFICATE_SHA256: ${{ secrets.INDEPENDENT_SIGNING_CERTIFICATE_SHA256 }}
+        run: |
+          set -euo pipefail
+          : "${INDEPENDENT_SIGNING_KEY:?Configure the fixed INDEPENDENT_SIGNING_KEY secret}"
+          : "${INDEPENDENT_KEY_ALIAS:?Configure the INDEPENDENT_KEY_ALIAS secret}"
+          : "${INDEPENDENT_STORE_PASSWORD:?Configure the INDEPENDENT_STORE_PASSWORD secret}"
+          : "${INDEPENDENT_KEY_PASSWORD:?Configure the INDEPENDENT_KEY_PASSWORD secret}"
+          : "${INDEPENDENT_SIGNING_CERTIFICATE_SHA256:?Configure the fixed INDEPENDENT_SIGNING_CERTIFICATE_SHA256 secret}"
+          umask 077
+          keystore_path="$RUNNER_TEMP/lnr-independent-signing.keystore"
+          printf '%s' "$INDEPENDENT_SIGNING_KEY" | base64 --decode > "$keystore_path"
+          python3 scripts/build-independent.py \
+            --release-ref "$RELEASE_REF" \
+            --keystore "$keystore_path" \
+            --key-alias "$INDEPENDENT_KEY_ALIAS" \
+            --expected-signing-certificate-sha256 "$INDEPENDENT_SIGNING_CERTIFICATE_SHA256"
+
+      - name: Upload independent build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: LightNovelReader-independent-${{ github.run_number }}-${{ github.run_attempt }}
+          path: artifacts/apk/independent/
+          if-no-files-found: error
+
+      - name: Remove temporary signing material
+        if: always()
+        run: rm -f "$RUNNER_TEMP/lnr-independent-signing.keystore"

@@ -576,8 +576,8 @@ fun SettingsAboutInfoDialog(
                 AnnotatedText(
                     text = stringResource(
                         id = R.string.settings_about_source_code,
-                        "<b><a href=\"https://github.com/dmzz-yyhyy/LightNovelReader\">GitHub</a></b>",
-                        "<b><a href=\"https://github.com/dmzz-yyhyy/LightNovelReader/issues\">GitHub Issues</a></b>"
+                        "<b><a href=\"https://github.com/Maker-Wen/LightNovelReader\">GitHub</a></b>",
+                        "<b><a href=\"https://github.com/Maker-Wen/LightNovelReader/issues\">GitHub Issues</a></b>"
                     ),
                     style = typography.labelLarge
                 )

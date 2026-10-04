@@ -70,7 +70,6 @@ fun UpdatesAvailableDialog(
     isDownloading: Boolean = false,
     downloadProgress: Float = 0f
 ) {
-    println(release?.downloadUrl)
     val context = LocalContext.current
     AlertDialog(
         icon = {
@@ -176,9 +175,16 @@ fun UpdatesAvailableDialog(
             Button(
                 modifier = Modifier.fillMaxWidth(),
                 onClick = {
-                    onConfirmation()
+                    if (BuildConfig.INDEPENDENT_BUILD) {
+                        release?.releasePageUrl?.let { url ->
+                            context.startActivity(Intent(Intent.ACTION_VIEW, url.toUri()))
+                            onDismissRequest()
+                        }
+                    } else {
+                        onConfirmation()
+                    }
                 },
-                enabled = !isDownloading
+                enabled = !isDownloading && (!BuildConfig.INDEPENDENT_BUILD || release != null)
             ) {
                 if (isDownloading) {
                     CircularProgressIndicator(
@@ -195,7 +201,12 @@ fun UpdatesAvailableDialog(
                         modifier = Modifier.size(18.dp)
                     )
                     Spacer(Modifier.width(6.dp))
-                    Text(text = stringResource(R.string.install_update))
+                    Text(
+                        text = stringResource(
+                            if (BuildConfig.INDEPENDENT_BUILD) R.string.settings_independent_release_page
+                            else R.string.install_update
+                        )
+                    )
                 }
             }
         },
@@ -211,9 +222,13 @@ fun UpdatesAvailableDialog(
                     onClick = onDismissRequest,
                     enabled = !isDownloading
                 ) {
-                    Text(text = stringResource(R.string.decline))
+                    Text(
+                        text = stringResource(
+                            if (BuildConfig.INDEPENDENT_BUILD) R.string.cancel else R.string.decline
+                        )
+                    )
                 }
-                OutlinedButton(
+                if (!BuildConfig.INDEPENDENT_BUILD) OutlinedButton(
                     modifier = Modifier.weight(1f),
                     onClick = {
                         release?.downloadUrl?.let { url ->

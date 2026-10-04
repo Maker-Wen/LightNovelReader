@@ -12,9 +12,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import indi.dmzz_yyhyy.lightnovelreader.ui.navigation.Navigator
+import indi.dmzz_yyhyy.lightnovelreader.R
 import indi.dmzz_yyhyy.lightnovelreader.ui.navigation.NavEntryScope
 import indi.dmzz_yyhyy.lightnovelreader.ui.navigation.overlay.overlayEntry
 import androidx.work.WorkInfo
@@ -57,12 +59,14 @@ fun NavEntryScope.settingsDestination() {
         val settingsViewModel = hiltViewModel<SettingsViewModel>()
         val updatesAvailableDialogViewModel = hiltViewModel<UpdatesAvailableDialogViewModel>()
         val updatePhase by updatesAvailableDialogViewModel.updatePhaseFlow.collectAsStateWithLifecycle(
-            "Not Checked"
+            stringResource(R.string.independent_update_not_checked)
         )
+        val isCheckingUpdate by updatesAvailableDialogViewModel.isChecking.collectAsStateWithLifecycle()
         SettingsScreen(
             updatePhase = updatePhase,
             settingState = settingsViewModel.settingState,
             checkUpdate = updatesAvailableDialogViewModel::checkUpdate,
+            isCheckingUpdate = isCheckingUpdate,
             importData = settingsViewModel::importFromFile,
             onClickDebugMode = navigator::navigateToSettingsDebugDestination,
             onClickLicenses = navigator::navigateToSettingsLicensesDestination,

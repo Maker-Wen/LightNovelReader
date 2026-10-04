@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and verify a locally signed APK for the independent development branch."""
+"""Build and verify a signed APK and update.json for the independent distribution."""
 import argparse
 from datetime import datetime
 import hashlib
@@ -9,15 +9,84 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
+
+sys.dont_write_bytecode = True  # Imported helpers must not dirty a clean release checkout.
+from independent_metadata import APPLICATION_ID, apk_output, sha256_hex, update_metadata_from_report, verify_inspection
 
 ROOT = Path(__file__).resolve().parent.parent
 BRANCH = "dev/independent-edition"
-APPLICATION_ID = "io.github.makerwen.lightnovelreader"
 
 
 def git(*args):
     return subprocess.check_output(["git", "-c", "core.fsmonitor=false", *args], cwd=ROOT)
+
+
+def validate_build_ref(release_tag=None, release_ref=None):
+    branch = git("branch", "--show-current").decode().strip()
+    head = git("rev-parse", "HEAD").decode().strip()
+    if git("ls-files", "-u").strip():
+        raise SystemExit("Resolve merge conflicts before building.")
+    if release_tag is None and release_ref is None:
+        if branch != BRANCH:
+            raise SystemExit(f"Switch to {BRANCH} before building this distribution (current: {branch or 'detached HEAD'}).")
+        return dict(branch=branch, head=head)
+    if release_tag is not None and release_ref is not None:
+        raise SystemExit("Use only one of --release-tag and --release-ref.")
+    if (release_tag is not None and not release_tag.strip()) or (release_ref is not None and not release_ref.strip()):
+        raise SystemExit("Release tag/ref must be nonempty.")
+    ref = f"refs/tags/{release_tag}" if release_tag is not None else release_ref
+    if release_tag is not None:
+        valid = subprocess.run(["git", "check-ref-format", ref], cwd=ROOT, capture_output=True)
+        if valid.returncode:
+            raise SystemExit("--release-tag must be a literal valid tag name.")
+    try:
+        commit = git("rev-parse", "--verify", "--end-of-options", f"{ref}^{{commit}}").decode().strip()
+    except subprocess.CalledProcessError:
+        raise SystemExit("Release ref must resolve to an existing commit or tag.") from None
+    if commit != head:
+        raise SystemExit("Check out the exact --release-tag/--release-ref commit before building.")
+    if git("status", "--porcelain", "--untracked-files=all").strip():
+        raise SystemExit("Release builds require a clean checkout of the confirmed commit.")
+    # A normal checkout has a local branch; CI's detached tag checkout uses origin.
+    has_independent_history = False
+    for independent_ref in (f"refs/heads/{BRANCH}", f"refs/remotes/origin/{BRANCH}"):
+        exists = subprocess.run(["git", "show-ref", "--verify", "--quiet", independent_ref], cwd=ROOT)
+        if exists.returncode == 0:
+            has_independent_history = True
+            ancestor = subprocess.run(["git", "merge-base", "--is-ancestor", commit, independent_ref], cwd=ROOT)
+            if ancestor.returncode == 0:
+                return dict(branch=branch, head=head, releaseRef=ref, releaseTag=release_tag)
+    if has_independent_history:
+        raise SystemExit(f"Release commit must belong to {BRANCH} history.")
+    raise SystemExit(f"Fetch or create {BRANCH} before verifying release history.")
+
+
+def signing_environment(args, env):
+    if args.expected_signing_certificate_sha256:
+        try:
+            args.expected_signing_certificate_sha256 = sha256_hex(
+                args.expected_signing_certificate_sha256, "Expected signing certificate"
+            )
+        except ValueError as error:
+            raise SystemExit(str(error)) from None
+    if args.keystore:
+        if not args.keystore.is_file():
+            raise SystemExit("The signing keystore file does not exist.")
+        if not args.key_alias:
+            raise SystemExit("--keystore requires --key-alias.")
+        for key in ("INDEPENDENT_STORE_PASSWORD", "INDEPENDENT_KEY_PASSWORD"):
+            if not env.get(key):
+                raise SystemExit(f"--keystore requires {key} in the environment.")
+        env.update(INDEPENDENT_KEYSTORE_FILE=str(args.keystore.resolve()), INDEPENDENT_KEY_ALIAS=args.key_alias)
+    elif args.key_alias:
+        raise SystemExit("--key-alias requires --keystore.")
+    else:
+        # Ambient CI variables must never replace the default local Android signer.
+        env.pop("INDEPENDENT_KEYSTORE_FILE", None)
+        env.pop("INDEPENDENT_KEY_ALIAS", None)
+    return env
 
 
 def java_home():
@@ -57,19 +126,20 @@ def sdk_tools():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--offline", action="store_true", help="Use cached Gradle dependencies only")
+    release = parser.add_mutually_exclusive_group()
+    release.add_argument("--release-tag", help="Build the checked-out tag after verifying independent branch history")
+    release.add_argument("--release-ref", help="Build an exact clean checked-out commit/ref from independent branch history")
+    parser.add_argument("--keystore", type=Path, help="Use a fixed signing keystore; passwords come from INDEPENDENT_*_PASSWORD")
+    parser.add_argument("--key-alias", help="Signing key alias for --keystore")
+    parser.add_argument("--expected-signing-certificate-sha256", help="Reject APKs whose signer differs from this SHA-256")
     args = parser.parse_args()
-    branch = git("branch", "--show-current").decode().strip()
-    if branch != BRANCH:
-        raise SystemExit(f"Switch to {BRANCH} before building this distribution (current: {branch or 'detached HEAD'}).")
-    if git("ls-files", "-u").strip():
-        raise SystemExit("Resolve merge conflicts before building.")
-    env = dict(os.environ, JAVA_HOME=str(java_home()))
+    checkout = validate_build_ref(args.release_tag, args.release_ref)
+    env = signing_environment(args, dict(os.environ, JAVA_HOME=str(java_home())))
     signer, aapt = sdk_tools()
     out = ROOT / "artifacts/apk/independent" / datetime.now().strftime("%Y%m%d-%H%M%S")
     out.mkdir(parents=True, exist_ok=False)
     source = {
-        "branch": branch,
-        "head": git("rev-parse", "HEAD").decode().strip(),
+        **checkout,
         "worktreeDirty": bool(git("status", "--porcelain", "--untracked-files=all").strip()),
         "stagedDiffSha256": hashlib.sha256(git("diff", "--cached", "--binary")).hexdigest(),
         "unstagedDiffSha256": hashlib.sha256(git("diff", "--binary")).hexdigest(),
@@ -87,7 +157,16 @@ def main():
     if (project.path == ':app') {
         project.plugins.withId('com.android.application') {
             project.extensions.getByName('androidComponents').finalizeDsl { android ->
-                android.buildTypes.getByName('independent').signingConfig = android.signingConfigs.getByName('debug')
+                def keystoreFile = System.getenv('INDEPENDENT_KEYSTORE_FILE')
+                def signing = android.signingConfigs.getByName('debug')
+                if (keystoreFile) {
+                    signing = android.signingConfigs.maybeCreate('independentFixed')
+                    signing.storeFile = new File(keystoreFile)
+                    signing.storePassword = System.getenv('INDEPENDENT_STORE_PASSWORD')
+                    signing.keyAlias = System.getenv('INDEPENDENT_KEY_ALIAS')
+                    signing.keyPassword = System.getenv('INDEPENDENT_KEY_PASSWORD')
+                }
+                android.buildTypes.getByName('independent').signingConfig = signing
             }
         }
     }
@@ -101,9 +180,16 @@ def main():
             result = subprocess.run(command, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
         if result.returncode:
             raise SystemExit(f"Build failed. See {out / 'build.log'}")
+    if args.release_tag or args.release_ref:
+        # Do not label concurrent edits or a moved HEAD as the confirmed release.
+        if validate_build_ref(args.release_tag, args.release_ref)["head"] != checkout["head"]:
+            raise SystemExit("Release checkout changed during the build.")
     metadata_path = ROOT / "app/build/outputs/apk/independent/output-metadata.json"
     metadata = json.loads(metadata_path.read_text())
-    element, = metadata["elements"]
+    try:
+        element = apk_output(metadata)
+    except ValueError as error:
+        raise SystemExit(str(error)) from None
     # Keep the artifact filename produced by the Android Gradle Plugin.
     apk = out / element["outputFile"]
     shutil.copy2(metadata_path.parent / element["outputFile"], apk)
@@ -115,32 +201,24 @@ def main():
     badging = run(aapt, "dump", "badging", apk)
     manifest = run(aapt, "dump", "xmltree", apk, "AndroidManifest.xml")
     config = (ROOT / "app/build/generated/source/buildConfig/independent/indi/dmzz_yyhyy/lightnovelreader/BuildConfig.java").read_text()
-    if metadata["applicationId"] != APPLICATION_ID or f"name='{APPLICATION_ID}'" not in badging:
-        raise SystemExit("Unexpected APK applicationId")
-    if "application-label:'LightNovelReader'" not in badging:
-        raise SystemExit("Unexpected application label")
-    if "application-debuggable" in badging or "BenchmarkFixtureReceiver" in manifest:
-        raise SystemExit("Test-only application configuration found in APK")
-    if "INDEPENDENT_BUILD = true;" not in config or "BENCHMARK = false;" not in config:
-        raise SystemExit("Incorrect independent build flags")
-    for expected in [APPLICATION_ID + ".provider", APPLICATION_ID + ".androidx-startup",
-                     "indi.dmzz_yyhyy.lightnovelreader.MainActivity"]:
-        if expected not in manifest:
-            raise SystemExit(f"Missing manifest identity: {expected}")
+    try:
+        verification = verify_inspection(metadata, signature, badging, manifest, config,
+                                         args.expected_signing_certificate_sha256)
+    except ValueError as error:
+        raise SystemExit(str(error)) from None
     sha = hashlib.sha256(apk.read_bytes()).hexdigest()
-    report = dict(source, applicationId=APPLICATION_ID, appName="LightNovelReader",
-                  versionName=element["versionName"], versionCode=element["versionCode"],
-                  apk=str(apk), bytes=apk.stat().st_size, sha256=sha, signatureVerified=True,
-                  debuggable=False, independentBuild=True, benchmarkEnabled=False,
-                  upstreamAppUpdatesEnabled=False)
+    report = dict(source, **verification, appName="LightNovelReader", apk=str(apk), apkFile=apk.name,
+                  bytes=apk.stat().st_size, sha256=sha, upstreamAppUpdatesEnabled=False)
+    update = update_metadata_from_report(report)
     (out / "package-verification.json").write_text(json.dumps(report, indent=2) + "\n")
+    (out / "update.json").write_text(json.dumps(update, indent=2, ensure_ascii=False) + "\n")
     for name, text in [("signature.txt", signature), ("badging.txt", badging), ("manifest.txt", manifest)]:
         (out / name).write_text(text)
     (out / "SHA256SUMS").write_text(f"{sha}  {apk.name}\n")
     mapping = ROOT / "app/build/outputs/mapping/independent/mapping.txt"
     if mapping.exists():
         shutil.copy2(mapping, out / "mapping.txt")
-    print(f"Verified APK: {apk}\nSHA-256: {sha}")
+    print(f"Verified APK: {apk}\nSHA-256: {sha}\nUpdate metadata: {out / 'update.json'}")
 
 
 if __name__ == "__main__":

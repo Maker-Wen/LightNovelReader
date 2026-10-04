@@ -7,6 +7,7 @@ interface Release {
     val versionName: String
     val releaseNotes: String
     val downloadUrl: String
+    val releasePageUrl: String get() = downloadUrl
 
     /***
      * 第一个File是需要处理的文件

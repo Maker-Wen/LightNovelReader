@@ -59,7 +59,8 @@ fun SettingsScreen(
     onClickPluginManager: () -> Unit,
     onClickTextFormatting: () -> Unit,
     onClickStorageManager: () -> Unit,
-    onOptOut: () -> Unit
+    onOptOut: () -> Unit,
+    isCheckingUpdate: Boolean = false,
 ) {
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
     val listState = rememberLazyListState()
@@ -105,6 +106,7 @@ fun SettingsScreen(
                         updatePhase = updatePhase,
                         settingState = settingState,
                         checkUpdate = checkUpdate,
+                        isCheckingUpdate = isCheckingUpdate,
                     )
                 }
             }

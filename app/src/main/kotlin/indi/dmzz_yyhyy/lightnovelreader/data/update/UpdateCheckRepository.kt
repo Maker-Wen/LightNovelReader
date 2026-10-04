@@ -19,9 +19,12 @@ import indi.dmzz_yyhyy.lightnovelreader.R
 import indi.dmzz_yyhyy.lightnovelreader.data.userdata.UserDataRepository
 import indi.dmzz_yyhyy.lightnovelreader.ui.home.settings.data.MenuOptions
 import io.nightfish.lightnovelreader.api.userdata.UserDataPath
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -46,18 +49,21 @@ class UpdateCheckRepository @Inject constructor(
 ) {
     private val coroutineScope = CoroutineScope(Dispatchers.IO)
     private var checkJob: Job? = null
+    private val independentUpdateSource = IndependentGitHubUpdateSource(OkHttpIndependentUpdateTransport())
     var release: Release? = null
         private set
     private val mutableAvailable: MutableStateFlow<Boolean> = MutableStateFlow(false)
     val availableFlow: Flow<Boolean> = mutableAvailable
     private val _updatePhase = MutableStateFlow(
         if (BuildConfig.INDEPENDENT_BUILD) {
-            context.getString(R.string.settings_manual_apk_updates_desc)
+            context.getString(R.string.independent_update_not_checked)
         } else {
             "未检查"
         }
     )
     val updatePhase: Flow<String> = _updatePhase
+    private val _isChecking = MutableStateFlow(false)
+    val isChecking: StateFlow<Boolean> = _isChecking.asStateFlow()
     private val _isDownloading = MutableStateFlow(false)
     val isDownloading: StateFlow<Boolean> = _isDownloading.asStateFlow()
     private val _downloadProgress = MutableStateFlow(0f)
@@ -83,48 +89,103 @@ class UpdateCheckRepository @Inject constructor(
     }
 
     fun resetAvailable() {
+        if (BuildConfig.INDEPENDENT_BUILD) {
+            mutableAvailable.value = false
+            return
+        }
         coroutineScope.launch {
             mutableAvailable.update { false }
         }
     }
 
     fun check() {
-        if (BuildConfig.INDEPENDENT_BUILD) return
-        if (checkJob != null && checkJob!!.isActive) return
+        if (checkJob?.isActive == true || !_isChecking.compareAndSet(false, true)) return
+        if (BuildConfig.INDEPENDENT_BUILD) {
+            release = null
+            mutableAvailable.value = false
+            _updatePhase.value = context.getString(R.string.independent_update_checking)
+        }
         checkJob = coroutineScope.launch {
-            val updateChannelKey =
-                userDataRepository.stringUserData(UserDataPath.Settings.App.UpdateChannel.path)
-                    .get() ?: MenuOptions.UpdateChannelOptions.DEVELOPMENT
-            val distributionPlatform =
-                userDataRepository.stringUserData(UserDataPath.Settings.App.DistributionPlatform.path)
-                    .get() ?: MenuOptions.UpdatePlatformOptions.LnrAPI
-            Log.i(
-                "UpdateChecker",
-                "Checking for updates from $distributionPlatform/$updateChannelKey"
-            )
-            _updatePhase.update { "已请求更新，等待 $distributionPlatform 应答" }
             try {
-                release =
-                    MenuOptions.UpdatePlatformOptions
-                        .getOptionWithValue(distributionPlatform).value
-                        .getOptionWithValue(updateChannelKey).value
-                        .parser(_updatePhase)
-            } catch (e: Exception) {
-                Log.e("UpdateChecker", "failed to get release")
-                e.printStackTrace()
-                _updatePhase.emit("${formattedNow()} | 失败: ${e.javaClass.simpleName}\n${e.message}")
+                if (BuildConfig.INDEPENDENT_BUILD) checkIndependentUpdate()
+                else checkUpstreamUpdate()
+            } finally {
+                _isChecking.value = false
             }
-            if (release != null) {
-                if (release!!.version > BuildConfig.VERSION_CODE) {
-                    Log.i("UpdateChecker", "Updates available: ${release!!.versionName}")
-                    _updatePhase.emit("${formattedNow()} | 有可用更新: ${release!!.versionName}")
-                } else {
-                    Log.i("UpdateChecker", "App is up to date (${release!!.versionName})")
-                    _updatePhase.emit("${formattedNow()} | 已是最新 (远程: ${release!!.versionName})")
+        }
+    }
+
+    private suspend fun checkIndependentUpdate() {
+        try {
+            val result = independentUpdateSource.check(context.packageName, BuildConfig.VERSION_CODE, Build.VERSION.SDK_INT)
+            currentCoroutineContext().ensureActive()
+            when (result) {
+                is IndependentUpdateCheckResult.Available -> {
+                    release = result.release
+                    _updatePhase.value = context.getString(R.string.independent_update_available, result.release.versionName)
+                    mutableAvailable.value = true
+                }
+                is IndependentUpdateCheckResult.UpToDate -> {
+                    _updatePhase.value = context.getString(R.string.independent_update_up_to_date, result.release.versionName)
+                }
+                IndependentUpdateCheckResult.NotPublished -> {
+                    _updatePhase.value = context.getString(R.string.independent_update_not_published)
+                }
+                IndependentUpdateCheckResult.Incompatible -> {
+                    _updatePhase.value = context.getString(R.string.independent_update_incompatible)
+                }
+                is IndependentUpdateCheckResult.Failed -> {
+                    result.cause?.let { Log.e("UpdateChecker", "Independent update check failed", it) }
+                    val reason = when (result.reason) {
+                        IndependentUpdateFailure.HTTP -> context.getString(R.string.independent_update_http_error, result.httpStatus)
+                        IndependentUpdateFailure.INVALID_METADATA -> context.getString(R.string.independent_update_invalid_metadata)
+                        IndependentUpdateFailure.INVALID_RELEASE -> context.getString(R.string.independent_update_invalid_release)
+                        IndependentUpdateFailure.NETWORK -> context.getString(R.string.independent_update_network_error)
+                    }
+                    _updatePhase.value = context.getString(R.string.independent_update_failed, reason)
                 }
             }
-            mutableAvailable.emit(release != null && release!!.version > BuildConfig.VERSION_CODE)
+        } catch (e: CancellationException) {
+            release = null
+            mutableAvailable.value = false
+            _updatePhase.value = context.getString(R.string.independent_update_cancelled)
+            throw e
         }
+    }
+
+    private suspend fun checkUpstreamUpdate() {
+        val updateChannelKey =
+            userDataRepository.stringUserData(UserDataPath.Settings.App.UpdateChannel.path)
+                .get() ?: MenuOptions.UpdateChannelOptions.DEVELOPMENT
+        val distributionPlatform =
+            userDataRepository.stringUserData(UserDataPath.Settings.App.DistributionPlatform.path)
+                .get() ?: MenuOptions.UpdatePlatformOptions.LnrAPI
+        Log.i(
+            "UpdateChecker",
+            "Checking for updates from $distributionPlatform/$updateChannelKey"
+        )
+        _updatePhase.update { "已请求更新，等待 $distributionPlatform 应答" }
+        try {
+            release =
+                MenuOptions.UpdatePlatformOptions
+                    .getOptionWithValue(distributionPlatform).value
+                    .getOptionWithValue(updateChannelKey).value
+                    .parser(_updatePhase)
+        } catch (e: Exception) {
+            Log.e("UpdateChecker", "failed to get release")
+            e.printStackTrace()
+            _updatePhase.emit("${formattedNow()} | 失败: ${e.javaClass.simpleName}\n${e.message}")
+        }
+        if (release != null) {
+            if (release!!.version > BuildConfig.VERSION_CODE) {
+                Log.i("UpdateChecker", "Updates available: ${release!!.versionName}")
+                _updatePhase.emit("${formattedNow()} | 有可用更新: ${release!!.versionName}")
+            } else {
+                Log.i("UpdateChecker", "App is up to date (${release!!.versionName})")
+                _updatePhase.emit("${formattedNow()} | 已是最新 (远程: ${release!!.versionName})")
+            }
+        }
+        mutableAvailable.emit(release != null && release!!.version > BuildConfig.VERSION_CODE)
     }
 
     fun downloadUpdate() {
