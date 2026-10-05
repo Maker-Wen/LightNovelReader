@@ -24,7 +24,7 @@ spec.loader.exec_module(build)
 CERTIFICATE = "a" * 64
 VERSION_NAME = "1.3.0_MakerWen (2026/10/04)"
 AGP = dict(applicationId=APPLICATION_ID, elements=[dict(
-    outputFile="LightNovelReader-1.3.0-independent.apk", versionCode=10300012, versionName=VERSION_NAME
+    outputFile="LightNovelReader-1.3.0.apk", versionCode=10300012, versionName=VERSION_NAME
 )])
 BADGING = (f"package: name='{APPLICATION_ID}' versionCode='10300012' versionName='{VERSION_NAME}'\n"
            "sdkVersion:'24'\napplication-label:'LightNovelReader'\n")

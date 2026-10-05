@@ -8,7 +8,7 @@ import kotlinx.serialization.json.*
 import java.io.IOException
 
 private const val APP_ID = "io.github.makerwen.lightnovelreader"
-private const val APK_NAME = "LightNovelReader-independent.apk"
+private const val APK_NAME = "LightNovelReader-1.3.0.apk"
 private const val PAGE = "https://github.com/Maker-Wen/LightNovelReader/releases/tag/mw-10300012"
 private const val ASSET_BASE = "https://github.com/Maker-Wen/LightNovelReader/releases/download/mw-10300012/"
 private const val METADATA_URL = ASSET_BASE + "update.json"

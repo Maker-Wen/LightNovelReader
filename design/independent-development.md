@@ -80,6 +80,10 @@ workflow 只上传 `artifacts/apk/independent/` 的构建产物，不自动创�
 
 首次正式 Release 必须先把 `versionCode` 增加到高于已安装本地包的值；后续每次发布也必须递增。将版本改动提交到独立分支，确认该历史中的确切 commit 或 tag，再以发布模式本地构建或人工触发独立版 CI。验收后，在 `Maker-Wen/LightNovelReader` 人工创建指向该 commit 的 draft Release，并上传同一次构建的 APK 和 `update.json`；核对文件名、字节大小、SHA-256 与签名后，再人工发布为正式 Release。仅上传 workflow artifact、创建 draft 或 prerelease 都不会成为客户端正式更新。
 
+对外发布标签采用 `v<版本名>-<versionCode>`，例如 `v1.3.0-10300013`；标题采用 `LightNovelReader 1.3.0 (10300013)`，APK 采用 Gradle 输出的 `LightNovelReader-1.3.0.apk`。内部仍使用 `independent` 构建类型。
+
+`10300013` 曾以带 `independent` 的标签和 APK 文件名发布；去掉后缀时复用同一个已验收的 CI APK，仅调整文件名、`update.json.apkFile` 与 `SHA256SUMS` 中的文件名，并将新命名的 Release 设为 latest。此次命名调整没有产生新应用版本，versionCode 不变；旧 Release 保留，使已有链接继续可用。
+
 `update.json` 的 schemaVersion 为 `1`，字段如下：
 
 | 字段 | 内容 |

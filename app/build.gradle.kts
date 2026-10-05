@@ -113,6 +113,11 @@ android {
 androidComponents {
     onVariants(selector().withBuildType("independent")) { variant ->
         variant.applicationId.set("io.github.makerwen.lightnovelreader")
+        variant.outputs.forEach { output ->
+            val outputImpl = output as com.android.build.api.variant.impl.VariantOutputImpl
+            outputImpl.outputFileName =
+                outputImpl.outputFileName.get().replace("-independent.apk", ".apk")
+        }
     }
 
     onVariants(selector().withBuildType("snapshot")) { variant ->
